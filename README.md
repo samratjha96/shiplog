@@ -64,7 +64,10 @@ ShipLog auto-detects GitHub repos from Docker Hub descriptions and `ghcr.io` pat
 ```bash
 shiplog map docker.io/linuxserver/sonarr linuxserver/docker-sonarr
 shiplog map docker.io/homeassistant/home-assistant home-assistant/core
+shiplog map ghcr.io/immich-app/immich-server immich-app/immich
 ```
+
+Run `shiplog mappings` to see all current mappings (including auto-detected ones).
 
 ## Usage
 
