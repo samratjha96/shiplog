@@ -115,12 +115,15 @@ _GITHUB_NON_REPO_PREFIXES = frozenset({
 })
 
 
-def _extract_github_url(text: str) -> str | None:
-    """Extract a github.com/owner/repo reference from text.
+def _extract_github_urls(text: str) -> list[str]:
+    """Extract all unique github.com/owner/repo references from text.
 
     Only matches explicit URLs — not arbitrary patterns.
     Rejects known non-repo paths like github.com/orgs/...
+    Returns deduplicated list preserving first-seen order.
     """
+    seen: set[str] = set()
+    results: list[str] = []
     for match in re.finditer(
         r"https?://github\.com/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)", text
     ):
@@ -128,11 +131,13 @@ def _extract_github_url(text: str) -> str | None:
         repo = match.group(2).rstrip("/")
         if repo.endswith(".git"):
             repo = repo[:-4]
-        # Skip known non-repo URL patterns
         if owner.lower() in _GITHUB_NON_REPO_PREFIXES:
             continue
-        return f"{owner}/{repo}"
-    return None
+        candidate = f"{owner}/{repo}"
+        if candidate not in seen:
+            seen.add(candidate)
+            results.append(candidate)
+    return results
 
 
 def resolve_github_repo(
@@ -168,21 +173,48 @@ def resolve_github_repo(
                 db.set_github_mapping(conn, image, candidate, auto_detected=True)
                 return candidate
 
-    # 3. Docker Hub — scrape description for GitHub URL
-    candidate = _try_docker_hub_description(client, image)
-    if candidate and validate_github_repo(client, candidate):
-        db.set_github_mapping(conn, image, candidate, auto_detected=True)
-        return candidate
+    # 3. Docker Hub — scrape description for GitHub URLs
+    #    Try all candidates, prefer the first one that has releases
+    #    (avoids picking e.g. traefik-library-image over traefik/traefik)
+    candidates = _try_docker_hub_description(client, image)
+    validated: list[str] = []
+    for candidate in candidates:
+        if validate_github_repo(client, candidate):
+            validated.append(candidate)
+
+    if validated:
+        # Prefer a repo that actually has releases (what we need for changelogs)
+        for repo in validated:
+            resp = _github_get(
+                client,
+                f"{GITHUB_API}/repos/{repo}/releases",
+                params={"per_page": 1},
+            )
+            if resp is not None and resp.status_code == 200:
+                releases = resp.json()
+                if releases:
+                    db.set_github_mapping(conn, image, repo, auto_detected=True)
+                    return repo
+
+        # None had releases — use the first valid repo anyway
+        best = validated[0]
+        db.set_github_mapping(conn, image, best, auto_detected=True)
+        return best
 
     return None
 
 
-def _try_docker_hub_description(client: httpx.Client, image: str) -> str | None:
-    """Try to find a GitHub repo URL in the Docker Hub description."""
+def _try_docker_hub_description(
+    client: httpx.Client,
+    image: str,
+) -> list[str]:
+    """Extract GitHub repo candidates from the Docker Hub description.
+
+    Returns a list of 'owner/repo' strings (not yet validated).
+    """
     # Parse namespace/name from image
     # docker.io/library/nginx → library/nginx
     # docker.io/crazymax/diun → crazymax/diun
-    # crazymax/diun → crazymax/diun
     img = image
     for prefix in ("docker.io/", "index.docker.io/", "registry-1.docker.io/"):
         if img.startswith(prefix):
@@ -196,7 +228,7 @@ def _try_docker_hub_description(client: httpx.Client, image: str) -> str | None:
     elif len(parts) == 2:
         namespace, name = parts[0], parts[1]
     else:
-        return None
+        return []
 
     try:
         resp = client.get(
@@ -205,12 +237,12 @@ def _try_docker_hub_description(client: httpx.Client, image: str) -> str | None:
             timeout=10.0,
         )
         if resp.status_code != 200:
-            return None
+            return []
         data = resp.json()
         desc = data.get("full_description") or data.get("description") or ""
-        return _extract_github_url(desc)
+        return _extract_github_urls(desc)
     except httpx.HTTPError:
-        return None
+        return []
 
 
 def fetch_releases(
