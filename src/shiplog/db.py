@@ -24,8 +24,9 @@ def get_db_path(override: str | None = None) -> Path:
     return default_db_path()
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
+def connect(db_path: str | Path) -> sqlite3.Connection:
     """Open a connection and ensure schema exists."""
+    db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row

@@ -1,6 +1,5 @@
 """Tests for shiplog.cli — Click CLI commands."""
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -20,11 +19,6 @@ def runner():
 def db_path(tmp_path):
     """Return a string path for the CLI --db flag."""
     return str(tmp_path / "test.db")
-
-
-def _connect(db_path: str):
-    """Helper to open DB from string path (tests seed data)."""
-    return db.connect(Path(db_path))
 
 
 def invoke(runner, args, db_path, env=None):
@@ -51,7 +45,7 @@ class TestIngest:
         assert "docker.io/crazymax/diun:v4.31.0" in result.output
 
         # Verify it's in the DB
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         pending = db.get_pending_updates(conn)
         assert len(pending) == 1
         assert pending[0]["image"] == "docker.io/crazymax/diun"
@@ -83,7 +77,7 @@ class TestTestIngest:
         assert "Ingested" in result.output
         assert "docker.io/crazymax/diun" in result.output
 
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         pending = db.get_pending_updates(conn)
         assert len(pending) == 1
         assert pending[0]["tag"] == "v4.31.0"
@@ -94,7 +88,7 @@ class TestTestIngest:
         result = invoke(runner, ["test-ingest", "docker.io/library/nginx"], db_path)
         assert result.exit_code == 0
 
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         pending = db.get_pending_updates(conn)
         assert pending[0]["tag"] == "latest"
         conn.close()
@@ -103,7 +97,7 @@ class TestTestIngest:
         result = invoke(runner, ["test-ingest", "--status", "new", "docker.io/foo/bar:v1"], db_path)
         assert result.exit_code == 0
 
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         pending = db.get_pending_updates(conn)
         assert pending[0]["status"] == "new"
         conn.close()
@@ -120,7 +114,7 @@ class TestList:
 
     def test_with_pending(self, runner, db_path):
         # Seed data
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/foo/bar", tag="v1", status="new")
         db.insert_update(conn, image="docker.io/baz/qux", tag="v2", status="update")
         conn.close()
@@ -131,7 +125,7 @@ class TestList:
         assert "docker.io/baz/qux" in result.output
 
     def test_all_flag(self, runner, db_path):
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         id1 = db.insert_update(conn, image="img1", tag="v1", status="new")
         db.insert_update(conn, image="img2", tag="v2", status="new")
         report_id = db.insert_report(conn, model="test", content="report")
@@ -179,7 +173,7 @@ class TestMap:
 
 class TestShow:
     def test_show_existing(self, runner, db_path):
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         report_id = db.insert_report(conn, model="test-model", content="# Test Report\n\nHello world")
         conn.close()
 
@@ -207,7 +201,7 @@ class TestStatus:
         assert "Database:" in result.output
 
     def test_status_with_data(self, runner, db_path):
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         db.insert_update(conn, image="img1", tag="v1", status="new")
         db.insert_update(conn, image="img2", tag="v2", status="new")
         db.set_github_mapping(conn, "img1", "owner/repo")
@@ -233,7 +227,7 @@ class TestReport:
     @patch("shiplog.cli.analyze")
     def test_report_dry_run(self, mock_analyze, mock_fetch, runner, db_path):
         # Seed an update
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/foo/bar", tag="v2.0", status="new")
         conn.close()
 
@@ -251,7 +245,7 @@ class TestReport:
         assert "Dry run" in result.output
 
         # Should NOT be marked as reported
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         pending = db.get_pending_updates(conn)
         assert len(pending) == 1
         conn.close()
@@ -259,7 +253,7 @@ class TestReport:
     @patch("shiplog.cli.fetch_changelog")
     @patch("shiplog.cli.analyze")
     def test_report_marks_reported(self, mock_analyze, mock_fetch, runner, db_path):
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/foo/bar", tag="v2.0", status="new")
         conn.close()
 
@@ -275,7 +269,7 @@ class TestReport:
         assert "Report saved" in result.output
 
         # Should be marked as reported
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         pending = db.get_pending_updates(conn)
         assert len(pending) == 0
         reports = db.get_all_reports(conn)
@@ -286,7 +280,7 @@ class TestReport:
     @patch("shiplog.cli.analyze")
     def test_report_deduplicates_images(self, mock_analyze, mock_fetch, runner, db_path):
         """Multiple updates for same image should only fetch changelog once."""
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/foo/bar", tag="v1.0", status="update")
         db.insert_update(conn, image="docker.io/foo/bar", tag="v2.0", status="update")
         conn.close()
@@ -307,7 +301,7 @@ class TestReport:
     @patch("shiplog.cli.analyze")
     @patch("shiplog.cli.fetch_changelog")
     def test_report_llm_error(self, mock_fetch, mock_analyze, runner, db_path):
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         db.insert_update(conn, image="img", tag="v1", status="new")
         conn.close()
 
@@ -321,7 +315,7 @@ class TestReport:
     @patch("shiplog.cli.analyze")
     @patch("shiplog.cli.fetch_changelog")
     def test_report_model_override(self, mock_fetch, mock_analyze, runner, db_path):
-        conn = _connect(db_path)
+        conn = db.connect(db_path)
         db.insert_update(conn, image="img", tag="v1", status="new")
         conn.close()
 
