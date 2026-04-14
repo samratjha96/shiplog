@@ -1,0 +1,32 @@
+[project]
+name = "shiplog"
+version = "0.1.0"
+description = "AI-powered container update reports — the brain behind diun"
+readme = "README.md"
+authors = [
+    { name = "Samrat Jha", email = "samrat@shiplog.dev" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+shiplog = "shiplog.cli:cli"
+
+[build-system]
+requires = ["uv_build>=0.9.17,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+markers = [
+    "network: tests that require network access (use --network to run)",
+]
+addopts = ["-q"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]

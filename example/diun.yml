@@ -1,0 +1,18 @@
+# Example diun configuration with ShipLog as script notifier.
+# Place this at /etc/diun/diun.yml or wherever your diun config lives.
+#
+# When diun detects a new image version, it calls `shiplog ingest`
+# which reads the DIUN_ENTRY_* env vars and stores the update in SQLite.
+
+watch:
+  schedule: "0 */6 * * *"  # Check every 6 hours
+
+providers:
+  file:
+    filename: /etc/diun/images.yml
+
+notif:
+  script:
+    cmd: "shiplog"
+    args:
+      - "ingest"

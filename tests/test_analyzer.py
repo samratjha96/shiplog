@@ -1,0 +1,69 @@
+"""Tests for shiplog.analyzer — LLM prompt building (no API calls)."""
+
+from shiplog.analyzer import build_prompt
+from shiplog.changelog import Changelog
+
+
+class TestBuildPrompt:
+    def test_single_image_with_releases(self):
+        cl = Changelog(
+            image="docker.io/crazymax/diun",
+            github_repo="crazy-max/diun",
+            releases=[
+                {
+                    "tag_name": "v4.31.0",
+                    "name": "v4.31.0",
+                    "body": "## What's Changed\n- Fixed a bug\n- Added feature X",
+                    "published_at": "2024-01-15T10:00:00Z",
+                },
+            ],
+        )
+        prompt = build_prompt([cl])
+        assert "docker.io/crazymax/diun" in prompt
+        assert "github.com/crazy-max/diun" in prompt
+        assert "v4.31.0" in prompt
+        assert "Fixed a bug" in prompt
+
+    def test_image_with_error(self):
+        cl = Changelog(
+            image="registry.local/myapp",
+            github_repo=None,
+            releases=[],
+            error="No GitHub repo found.",
+        )
+        prompt = build_prompt([cl])
+        assert "registry.local/myapp" in prompt
+        assert "No GitHub repo found" in prompt
+
+    def test_multiple_images(self):
+        changelogs = [
+            Changelog(image="img1", github_repo="a/b", releases=[
+                {"tag_name": "v1", "name": "v1", "body": "Release 1", "published_at": "2024-01-01"},
+            ]),
+            Changelog(image="img2", github_repo="c/d", releases=[
+                {"tag_name": "v2", "name": "v2", "body": "Release 2", "published_at": "2024-02-01"},
+            ]),
+        ]
+        prompt = build_prompt(changelogs)
+        assert "img1" in prompt
+        assert "img2" in prompt
+        assert "Release 1" in prompt
+        assert "Release 2" in prompt
+
+    def test_long_body_truncated(self):
+        long_body = "x" * 5000
+        cl = Changelog(
+            image="img",
+            github_repo="o/r",
+            releases=[
+                {"tag_name": "v1", "name": "v1", "body": long_body, "published_at": ""},
+            ],
+        )
+        prompt = build_prompt([cl])
+        assert "... (truncated)" in prompt
+        # Should be cut to ~3000 chars
+        assert len(prompt) < 4000
+
+    def test_empty_changelogs(self):
+        prompt = build_prompt([])
+        assert "Analyze" in prompt

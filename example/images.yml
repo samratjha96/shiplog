@@ -1,0 +1,44 @@
+# Example diun file provider config — common homelab images.
+# Place this at /etc/diun/images.yml (or wherever diun.yml points to).
+
+- name: docker.io/homeassistant/home-assistant
+  watch_repo: true
+  max_tags: 5
+  include_tags:
+    - ^\d+\.\d+\.\d+$
+
+- name: docker.io/linuxserver/sonarr
+  watch_repo: true
+  max_tags: 3
+  include_tags:
+    - ^\d+\.\d+\.\d+\.\d+-ls\d+$
+
+- name: docker.io/linuxserver/radarr
+  watch_repo: true
+  max_tags: 3
+
+- name: docker.io/linuxserver/prowlarr
+  watch_repo: true
+  max_tags: 3
+
+- name: docker.io/crazymax/diun
+  watch_repo: true
+  max_tags: 3
+
+- name: ghcr.io/immich-app/immich-server
+  watch_repo: true
+  max_tags: 3
+
+- name: docker.io/vaultwarden/server
+  watch_repo: true
+  max_tags: 3
+
+- name: docker.io/traefik
+  watch_repo: true
+  max_tags: 3
+  include_tags:
+    - ^v?\d+\.\d+\.\d+$
+
+- name: docker.io/pihole/pihole
+  watch_repo: true
+  max_tags: 3
