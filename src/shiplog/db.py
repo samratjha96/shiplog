@@ -172,6 +172,13 @@ def get_github_mapping(conn: sqlite3.Connection, image: str) -> str | None:
     return row["github_repo"] if row else None
 
 
+def delete_github_mapping(conn: sqlite3.Connection, image: str) -> bool:
+    """Delete a GitHub mapping. Returns True if a row was deleted."""
+    cur = conn.execute("DELETE FROM github_mappings WHERE image = ?", (image,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def get_all_github_mappings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all GitHub mappings."""
     return conn.execute(

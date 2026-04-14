@@ -129,6 +129,14 @@ class TestGitHubMappings:
         rows = db.get_all_github_mappings(conn)
         assert rows[0]["auto_detected"] == 1
 
+    def test_delete_mapping(self, conn):
+        db.set_github_mapping(conn, "img", "owner/repo")
+        assert db.delete_github_mapping(conn, "img") is True
+        assert db.get_github_mapping(conn, "img") is None
+
+    def test_delete_nonexistent_mapping(self, conn):
+        assert db.delete_github_mapping(conn, "nonexistent") is False
+
     def test_get_all(self, conn):
         db.set_github_mapping(conn, "a_img", "a/repo")
         db.set_github_mapping(conn, "b_img", "b/repo")

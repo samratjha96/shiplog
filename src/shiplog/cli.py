@@ -9,7 +9,7 @@ import click
 import httpx
 
 from shiplog import db
-from shiplog.analyzer import analyze, build_prompt
+from shiplog.analyzer import analyze
 from shiplog.changelog import Changelog, fetch_changelog
 from shiplog.diun import DiunParseError, parse_env
 
@@ -70,20 +70,11 @@ def test_ingest(ctx: click.Context, image_ref: str, status: str) -> None:
 
     IMAGE_REF is like 'docker.io/crazymax/diun:v4.31.0'
     """
-    # Split image:tag
-    if ":" in image_ref:
-        image, tag = image_ref.rsplit(":", 1)
-    else:
-        image, tag = image_ref, "latest"
+    # Split image:tag — handle port numbers (e.g. registry.local:5000/app:v1)
+    image, tag = _split_image_ref(image_ref)
 
-    # Auto-generate hub_link for Docker Hub images
-    hub_link = None
-    for prefix in ("docker.io/", "index.docker.io/"):
-        if image.startswith(prefix):
-            name = image[len(prefix):]
-            if "/" in name:
-                hub_link = f"https://hub.docker.com/r/{name}"
-            break
+    # Auto-generate hub_link
+    hub_link = _generate_hub_link(image)
 
     conn = _connect(ctx)
     row_id = db.insert_update(
@@ -94,6 +85,46 @@ def test_ingest(ctx: click.Context, image_ref: str, status: str) -> None:
         hub_link=hub_link,
     )
     click.echo(f"Ingested: {image}:{tag} ({status}) → id={row_id}")
+
+
+def _split_image_ref(ref: str) -> tuple[str, str]:
+    """Split an image reference into (image, tag).
+
+    Handles port numbers: 'registry.local:5000/app:v1' → ('registry.local:5000/app', 'v1')
+    Without tag: 'registry.local:5000/app' → ('registry.local:5000/app', 'latest')
+    """
+    # If there's a slash, the tag (if any) is after the last colon that comes after the last slash
+    if "/" in ref:
+        last_slash = ref.rfind("/")
+        after_slash = ref[last_slash + 1:]
+        if ":" in after_slash:
+            colon_pos = last_slash + 1 + after_slash.rfind(":")
+            return ref[:colon_pos], ref[colon_pos + 1:]
+        return ref, "latest"
+
+    # No slash — simple name:tag or just name
+    if ":" in ref:
+        parts = ref.rsplit(":", 1)
+        return parts[0], parts[1]
+    return ref, "latest"
+
+
+def _generate_hub_link(image: str) -> str | None:
+    """Generate a registry link for an image."""
+    # Docker Hub
+    for prefix in ("docker.io/", "index.docker.io/"):
+        if image.startswith(prefix):
+            name = image[len(prefix):]
+            if "/" in name:
+                return f"https://hub.docker.com/r/{name}"
+            return None
+
+    # GitHub Container Registry
+    if image.startswith("ghcr.io/"):
+        path = image.removeprefix("ghcr.io/")
+        return f"https://github.com/{path}/pkgs/container/{path.split('/')[-1]}"
+
+    return None
 
 
 @cli.command("list")
@@ -121,8 +152,10 @@ def list_updates(ctx: click.Context, show_all: bool) -> None:
 @cli.command()
 @click.option("--dry-run", is_flag=True, help="Generate report but don't mark updates as reported.")
 @click.option("--model", default=None, help="LLM model to use.")
+@click.option("-o", "--output", "output_path", default=None, type=click.Path(),
+              help="Write report to a file instead of stdout.")
 @click.pass_context
-def report(ctx: click.Context, dry_run: bool, model: str | None) -> None:
+def report(ctx: click.Context, dry_run: bool, model: str | None, output_path: str | None) -> None:
     """Generate an AI-powered report for pending updates."""
     conn = _connect(ctx)
     pending = db.get_pending_updates(conn)
@@ -171,7 +204,13 @@ def report(ctx: click.Context, dry_run: bool, model: str | None) -> None:
     )
     full_report = header + content
 
-    click.echo(full_report)
+    if output_path:
+        from pathlib import Path
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text(full_report + "\n")
+        click.echo(f"Report written to {output_path}", err=True)
+    else:
+        click.echo(full_report)
 
     # Save and mark reported (unless dry run)
     if not dry_run:
@@ -181,6 +220,21 @@ def report(ctx: click.Context, dry_run: bool, model: str | None) -> None:
         click.echo(f"\nReport saved (id={report_id}). {len(update_ids)} update(s) marked as reported.", err=True)
     else:
         click.echo("\n(Dry run — updates not marked as reported.)", err=True)
+
+
+@cli.command("reports")
+@click.pass_context
+def list_reports(ctx: click.Context) -> None:
+    """List all generated reports."""
+    conn = _connect(ctx)
+    rows = db.get_all_reports(conn)
+
+    if not rows:
+        click.echo("No reports generated yet. Run 'shiplog report' to create one.")
+        return
+
+    for row in rows:
+        click.echo(f"  [{row['id']}] {row['created_at'][:19]}  model={row['model']}")
 
 
 @cli.command()
@@ -234,6 +288,43 @@ def mappings(ctx: click.Context) -> None:
 
 
 @cli.command()
+@click.argument("image")
+@click.pass_context
+def unmap(ctx: click.Context, image: str) -> None:
+    """Remove a GitHub repo mapping for an image."""
+    conn = _connect(ctx)
+    existing = db.get_github_mapping(conn, image)
+    if not existing:
+        click.echo(f"No mapping found for {image}.", err=True)
+        sys.exit(1)
+    db.delete_github_mapping(conn, image)
+    click.echo(f"Removed mapping: {image} → {existing}")
+
+
+@cli.command()
+@click.option("--yes", is_flag=True, help="Skip confirmation.")
+@click.pass_context
+def purge(ctx: click.Context, yes: bool) -> None:
+    """Delete all reported updates from the database.
+
+    Keeps pending (unreported) updates and all reports.
+    """
+    conn = _connect(ctx)
+    count = conn.execute("SELECT COUNT(*) as n FROM updates WHERE reported = 1").fetchone()["n"]
+
+    if count == 0:
+        click.echo("Nothing to purge — no reported updates.")
+        return
+
+    if not yes:
+        click.confirm(f"Delete {count} reported update(s)?", abort=True)
+
+    conn.execute("DELETE FROM updates WHERE reported = 1")
+    conn.commit()
+    click.echo(f"Purged {count} reported update(s).")
+
+
+@cli.command()
 @click.pass_context
 def status(ctx: click.Context) -> None:
     """Show ShipLog status and configuration."""
@@ -245,12 +336,21 @@ def status(ctx: click.Context) -> None:
     all_mappings = db.get_all_github_mappings(conn)
     all_reports = db.get_all_reports(conn)
 
+    last_report = all_reports[0]["created_at"][:19] if all_reports else "never"
+
     click.echo("ShipLog Status")
     click.echo("=" * 40)
     click.echo(f"  Database:       {db_path}")
     click.echo(f"  Total updates:  {len(all_updates)}")
     click.echo(f"  Pending:        {len(pending)}")
     click.echo(f"  Reports:        {len(all_reports)}")
+    click.echo(f"  Last report:    {last_report}")
     click.echo(f"  Mappings:       {len(all_mappings)}")
     click.echo(f"  LLM API key: {'✅ set' if os.environ.get('LLM_API_KEY') else '❌ not set'}")
     click.echo(f"  GitHub token:   {'✅ set' if os.environ.get('GITHUB_TOKEN') else '⚠️  not set (60 req/hr limit)'}")
+
+    if pending:
+        images = sorted({row['image'] for row in pending})
+        click.echo(f"\nPending images:")
+        for img in images:
+            click.echo(f"  • {img}")

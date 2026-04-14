@@ -75,6 +75,9 @@ shiplog status
 # List pending (unreported) updates
 shiplog list
 
+# List all updates (including already-reported ones)
+shiplog list --all
+
 # Generate an AI report for pending updates
 shiplog report
 
@@ -84,14 +87,29 @@ shiplog report --dry-run
 # Use a specific LLM model
 shiplog report --model "gcp/google/gemini-2.5-pro"
 
+# Write report to a file
+shiplog report -o /var/log/shiplog/report-$(date +%F).md
+
+# List all past reports
+shiplog reports
+
 # Show a previous report
 shiplog show 1
+
+# Map an image to its GitHub repo
+shiplog map docker.io/linuxserver/sonarr linuxserver/docker-sonarr
+
+# Remove a mapping
+shiplog unmap docker.io/linuxserver/sonarr
 
 # View all mappings
 shiplog mappings
 
 # Test without diun — manually ingest an image
 shiplog test-ingest docker.io/crazymax/diun:v4.31.0
+
+# Clean up old reported updates from the database
+shiplog purge
 ```
 
 ### Example Report Output

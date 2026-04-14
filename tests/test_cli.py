@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from shiplog import db
 from shiplog.changelog import Changelog
-from shiplog.cli import cli
+from shiplog.cli import _split_image_ref, cli
 
 
 @pytest.fixture
@@ -25,6 +25,32 @@ def db_path(tmp_path):
 def invoke(runner, args, db_path, env=None):
     """Invoke CLI with --db pointing to a temp database."""
     return runner.invoke(cli, ["--db", db_path] + args, env=env or {})
+
+
+# --- _split_image_ref ---
+
+
+class TestSplitImageRef:
+    def test_standard(self):
+        assert _split_image_ref("docker.io/foo/bar:v1") == ("docker.io/foo/bar", "v1")
+
+    def test_no_tag(self):
+        assert _split_image_ref("docker.io/foo/bar") == ("docker.io/foo/bar", "latest")
+
+    def test_port_with_tag(self):
+        assert _split_image_ref("registry.local:5000/app:v2") == ("registry.local:5000/app", "v2")
+
+    def test_port_no_tag(self):
+        assert _split_image_ref("registry.local:5000/app") == ("registry.local:5000/app", "latest")
+
+    def test_ghcr(self):
+        assert _split_image_ref("ghcr.io/owner/repo:sha-abc") == ("ghcr.io/owner/repo", "sha-abc")
+
+    def test_simple_name(self):
+        assert _split_image_ref("nginx:alpine") == ("nginx", "alpine")
+
+    def test_simple_name_no_tag(self):
+        assert _split_image_ref("nginx") == ("nginx", "latest")
 
 
 # --- ingest ---
@@ -103,6 +129,37 @@ class TestTestIngest:
         assert pending[0]["status"] == "new"
         conn.close()
 
+    def test_docker_hub_link(self, runner, db_path):
+        invoke(runner, ["test-ingest", "docker.io/crazymax/diun:v4"], db_path)
+        conn = db.connect(db_path)
+        row = db.get_pending_updates(conn)[0]
+        assert row["hub_link"] == "https://hub.docker.com/r/crazymax/diun"
+        conn.close()
+
+    def test_registry_with_port_and_tag(self, runner, db_path):
+        invoke(runner, ["test-ingest", "registry.local:5000/myapp:v1.2"], db_path)
+        conn = db.connect(db_path)
+        row = db.get_pending_updates(conn)[0]
+        assert row["image"] == "registry.local:5000/myapp"
+        assert row["tag"] == "v1.2"
+        conn.close()
+
+    def test_registry_with_port_no_tag(self, runner, db_path):
+        invoke(runner, ["test-ingest", "registry.local:5000/myapp"], db_path)
+        conn = db.connect(db_path)
+        row = db.get_pending_updates(conn)[0]
+        assert row["image"] == "registry.local:5000/myapp"
+        assert row["tag"] == "latest"
+        conn.close()
+
+    def test_ghcr_link(self, runner, db_path):
+        invoke(runner, ["test-ingest", "ghcr.io/immich-app/immich-server:v1.0"], db_path)
+        conn = db.connect(db_path)
+        row = db.get_pending_updates(conn)[0]
+        assert row["hub_link"] is not None
+        assert "github.com" in row["hub_link"]
+        conn.close()
+
 
 # --- list ---
 
@@ -169,6 +226,47 @@ class TestMap:
         assert "No mappings" in result.output
 
 
+# --- unmap ---
+
+
+class TestUnmap:
+    def test_unmap_existing(self, runner, db_path):
+        invoke(runner, ["map", "docker.io/foo/bar", "foo/bar"], db_path)
+        result = invoke(runner, ["unmap", "docker.io/foo/bar"], db_path)
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+
+        # Verify it's gone
+        result = invoke(runner, ["mappings"], db_path)
+        assert "foo/bar" not in result.output
+
+    def test_unmap_nonexistent(self, runner, db_path):
+        result = invoke(runner, ["unmap", "docker.io/nope"], db_path)
+        assert result.exit_code == 1
+        assert "No mapping found" in result.output
+
+
+# --- reports ---
+
+
+class TestReports:
+    def test_reports_empty(self, runner, db_path):
+        result = invoke(runner, ["reports"], db_path)
+        assert result.exit_code == 0
+        assert "No reports" in result.output
+
+    def test_reports_with_data(self, runner, db_path):
+        conn = db.connect(db_path)
+        db.insert_report(conn, model="model-a", content="# Report A")
+        db.insert_report(conn, model="model-b", content="# Report B")
+        conn.close()
+
+        result = invoke(runner, ["reports"], db_path)
+        assert result.exit_code == 0
+        assert "model-a" in result.output
+        assert "model-b" in result.output
+
+
 # --- show ---
 
 
@@ -213,6 +311,49 @@ class TestStatus:
         assert "Total updates:  2" in result.output
         assert "Pending:        2" in result.output
         assert "Mappings:       1" in result.output
+        assert "Last report:    never" in result.output
+        assert "Pending images:" in result.output
+        assert "img1" in result.output
+        assert "img2" in result.output
+
+    def test_status_shows_last_report_date(self, runner, db_path):
+        conn = db.connect(db_path)
+        db.insert_report(conn, model="m", content="r")
+        conn.close()
+
+        result = invoke(runner, ["status"], db_path)
+        assert result.exit_code == 0
+        assert "Last report:    never" not in result.output
+        # Should show a timestamp, not "never"
+        assert "Reports:        1" in result.output
+
+
+# --- purge ---
+
+
+class TestPurge:
+    def test_purge_nothing(self, runner, db_path):
+        result = invoke(runner, ["purge", "--yes"], db_path)
+        assert result.exit_code == 0
+        assert "Nothing to purge" in result.output
+
+    def test_purge_reported_updates(self, runner, db_path):
+        conn = db.connect(db_path)
+        id1 = db.insert_update(conn, image="img1", tag="v1", status="new")
+        db.insert_update(conn, image="img2", tag="v2", status="new")  # stays pending
+        report_id = db.insert_report(conn, model="m", content="r")
+        db.mark_reported(conn, [id1], report_id)
+        conn.close()
+
+        result = invoke(runner, ["purge", "--yes"], db_path)
+        assert result.exit_code == 0
+        assert "Purged 1" in result.output
+
+        # Pending update should survive
+        conn = db.connect(db_path)
+        assert len(db.get_pending_updates(conn)) == 1
+        assert len(db.get_all_updates(conn)) == 1
+        conn.close()
 
 
 # --- report ---
@@ -330,6 +471,26 @@ class TestReport:
         result = invoke(runner, ["report"], db_path)
         assert result.exit_code == 1
         assert "timed out" in result.output
+
+    @patch("shiplog.cli.fetch_changelog")
+    @patch("shiplog.cli.analyze")
+    def test_report_output_to_file(self, mock_analyze, mock_fetch, runner, db_path, tmp_path):
+        conn = db.connect(db_path)
+        db.insert_update(conn, image="img", tag="v1", status="new")
+        conn.close()
+
+        mock_fetch.return_value = Changelog(image="img", github_repo="o/r", releases=[])
+        mock_analyze.return_value = ("Report content here", "test-model")
+
+        out_file = str(tmp_path / "output" / "report.md")
+        result = invoke(runner, ["report", "--dry-run", "-o", out_file], db_path)
+        assert result.exit_code == 0
+        assert "Report written to" in result.output
+
+        from pathlib import Path
+        written = Path(out_file).read_text()
+        assert "ShipLog Report" in written
+        assert "Report content here" in written
 
     @patch("shiplog.cli.analyze")
     @patch("shiplog.cli.fetch_changelog")
