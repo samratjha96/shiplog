@@ -121,7 +121,9 @@ def build_prompt(changelogs: list[Changelog]) -> str:
             sections.append(f"{header}\n\nNo releases found.")
             continue
 
-        # Split into detected release and older context
+        # Split into detected release and older context.
+        # Releases come from the API in newest-first order, so everything
+        # before the detected release is newer, and everything after is older.
         normalized_tag = cl.tag.lstrip("v")
         detected_release = None
         older_releases = []

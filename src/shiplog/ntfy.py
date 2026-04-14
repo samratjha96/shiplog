@@ -1,6 +1,7 @@
 """Send notifications via ntfy (https://ntfy.sh)."""
 
 import os
+import re
 
 import httpx
 
@@ -49,8 +50,6 @@ def _markdown_to_plain(text: str) -> str:
     ntfy clients inconsistently render markdown,
     so we strip it to plain text that looks good everywhere.
     """
-    import re
-
     lines = []
     for line in text.splitlines():
         # ## Header → HEADER (uppercase for visual weight)

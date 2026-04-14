@@ -141,6 +141,26 @@ def _extract_github_urls(text: str) -> list[str]:
     return results
 
 
+def _try_candidate(
+    client: httpx.Client,
+    conn: sqlite3.Connection,
+    image: str,
+    candidate: str,
+) -> str | None:
+    """Validate a candidate repo and save the mapping if it has releases."""
+    if not validate_github_repo(client, candidate):
+        return None
+    resp = _github_get(
+        client,
+        f"{GITHUB_API}/repos/{candidate}/releases",
+        params={"per_page": 1},
+    )
+    if resp is not None and resp.status_code == 200 and resp.json():
+        db.set_github_mapping(conn, image, candidate, auto_detected=True)
+        return candidate
+    return None
+
+
 def resolve_github_repo(
     client: httpx.Client,
     conn: sqlite3.Connection,
@@ -151,8 +171,11 @@ def resolve_github_repo(
     Strategy (in order):
     1. Check explicit user mappings in DB
     2. For ghcr.io images, try owner/repo from the image path
-    3. Check Docker Hub description for GitHub URLs
-    4. All candidates are validated via GitHub API before acceptance
+    3. For lscr.io images, look up Docker Hub equivalent
+    4. Check Docker Hub description for GitHub URLs
+    5. Try Docker Hub namespace/name as a GitHub repo directly
+
+    All candidates are validated via GitHub API before acceptance.
 
     Returns 'owner/repo' or None.
     """
@@ -181,57 +204,36 @@ def resolve_github_repo(
             docker_hub_image = f"docker.io/{parts[0]}/{parts[1]}"
             candidates = _try_docker_hub_description(client, docker_hub_image)
             for candidate in candidates:
-                if validate_github_repo(client, candidate):
-                    resp = _github_get(
-                        client,
-                        f"{GITHUB_API}/repos/{candidate}/releases",
-                        params={"per_page": 1},
-                    )
-                    if resp is not None and resp.status_code == 200 and resp.json():
-                        db.set_github_mapping(conn, image, candidate, auto_detected=True)
-                        return candidate
+                result = _try_candidate(client, conn, image, candidate)
+                if result:
+                    return result
 
     # 4. Docker Hub — scrape description for GitHub URLs
     #    Try all candidates, prefer the first one that has releases
     #    (avoids picking e.g. traefik-library-image over traefik/traefik)
     candidates = _try_docker_hub_description(client, image)
-    validated: list[str] = []
+    first_valid: str | None = None
     for candidate in candidates:
-        if validate_github_repo(client, candidate):
-            validated.append(candidate)
+        result = _try_candidate(client, conn, image, candidate)
+        if result:
+            return result
+        # Track first repo that exists (even without releases) as fallback
+        if first_valid is None and validate_github_repo(client, candidate):
+            first_valid = candidate
 
-    if validated:
-        # Prefer a repo that actually has releases (what we need for changelogs)
-        for repo in validated:
-            resp = _github_get(
-                client,
-                f"{GITHUB_API}/repos/{repo}/releases",
-                params={"per_page": 1},
-            )
-            if resp is not None and resp.status_code == 200:
-                releases = resp.json()
-                if releases:
-                    db.set_github_mapping(conn, image, repo, auto_detected=True)
-                    return repo
-
-        # None had releases — use the first valid repo anyway
-        best = validated[0]
-        db.set_github_mapping(conn, image, best, auto_detected=True)
-        return best
+    if first_valid:
+        # No candidate had releases — use the first valid repo anyway
+        db.set_github_mapping(conn, image, first_valid, auto_detected=True)
+        return first_valid
 
     # 5. Last resort: try namespace/name as a GitHub repo directly.
     #    Many projects use the same owner/repo on GitHub and Docker Hub
     #    (e.g. grafana/grafana, jellyfin/jellyfin). Validated via API.
     candidate = _image_to_github_candidate(image)
-    if candidate and validate_github_repo(client, candidate):
-        resp = _github_get(
-            client,
-            f"{GITHUB_API}/repos/{candidate}/releases",
-            params={"per_page": 1},
-        )
-        if resp is not None and resp.status_code == 200 and resp.json():
-            db.set_github_mapping(conn, image, candidate, auto_detected=True)
-            return candidate
+    if candidate:
+        result = _try_candidate(client, conn, image, candidate)
+        if result:
+            return result
 
     return None
 

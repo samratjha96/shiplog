@@ -297,6 +297,8 @@ def scan(ctx: click.Context, compose_files: tuple[str, ...]) -> None:
     unresolved = []
     already_mapped = []
 
+    from shiplog.changelog import resolve_github_repo
+
     with httpx.Client(timeout=10.0) as client:
         for image, tag in sorted(images.items()):
             # Check if already mapped
@@ -307,7 +309,6 @@ def scan(ctx: click.Context, compose_files: tuple[str, ...]) -> None:
 
             click.echo(f"  {image}:{tag} ...", err=True, nl=False)
             try:
-                from shiplog.changelog import resolve_github_repo
                 repo = resolve_github_repo(client, conn, image)
                 if repo:
                     resolved.append((image, repo))
@@ -386,6 +387,9 @@ def _extract_images_from_compose(path: str) -> dict[str, str]:
             continue
         raw = svc.get("image")
         if not raw or not isinstance(raw, str):
+            continue
+        # Skip images with variable interpolation (e.g. ${VERSION:-latest})
+        if "${" in raw:
             continue
         normalized = _normalize_image(raw)
         _, tag = split_image_ref(raw)
