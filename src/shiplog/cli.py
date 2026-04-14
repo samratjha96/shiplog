@@ -10,8 +10,13 @@ import click
 import httpx
 from dotenv import load_dotenv
 
-# Load .env before anything reads env vars
-load_dotenv()
+# Load .env from standard config location, then CWD as fallback
+_config_dir = Path.home() / ".config" / "shiplog"
+_config_env = _config_dir / ".env"
+if _config_env.exists():
+    load_dotenv(_config_env)
+else:
+    load_dotenv()  # CWD fallback
 
 from shiplog import __version__, db
 from shiplog.analyzer import analyze
@@ -235,6 +240,155 @@ def map_image(ctx: click.Context, image: str | None, github_repo: str | None) ->
 
     db.set_github_mapping(conn, image, github_repo, auto_detected=False)
     click.echo(f"Mapped: {image} → https://github.com/{github_repo}")
+
+
+@cli.command()
+@click.argument("compose_files", nargs=-1, type=click.Path(exists=True))
+@click.pass_context
+def scan(ctx: click.Context, compose_files: tuple[str, ...]) -> None:
+    """Scan docker-compose files and auto-detect GitHub repo mappings.
+
+    Parses image references from one or more docker-compose.yml files,
+    attempts to resolve each to a GitHub repo, and saves successful
+    mappings to the database.
+
+    \b
+    With no arguments, looks for docker-compose.yml / compose.yml in
+    the current directory.
+
+    Examples:
+        shiplog scan
+        shiplog scan docker-compose.yml
+        shiplog scan ~/homelab/compose/*.yml
+    """
+    conn = _connect(ctx)
+
+    # Find compose files
+    paths = list(compose_files)
+    if not paths:
+        for name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
+            if Path(name).exists():
+                paths.append(name)
+        if not paths:
+            click.echo("No compose files found. Pass them as arguments or run from a directory with docker-compose.yml.", err=True)
+            sys.exit(1)
+
+    # Extract images
+    images: dict[str, str] = {}  # normalized_image -> tag
+    for path in paths:
+        click.echo(f"Reading {path}...", err=True)
+        try:
+            found = _extract_images_from_compose(path)
+            images.update(found)
+        except Exception as e:
+            click.echo(f"  ⚠️  Failed to parse {path}: {e}", err=True)
+
+    if not images:
+        click.echo("No images found in compose files.")
+        return
+
+    click.echo(f"Found {len(images)} image(s). Resolving GitHub repos...\n", err=True)
+
+    # Resolve repos
+    resolved = []
+    unresolved = []
+    already_mapped = []
+
+    with httpx.Client(timeout=10.0) as client:
+        for image, tag in sorted(images.items()):
+            # Check if already mapped
+            existing = db.get_github_mapping(conn, image)
+            if existing:
+                already_mapped.append((image, existing))
+                continue
+
+            click.echo(f"  {image}:{tag} ...", err=True, nl=False)
+            try:
+                from shiplog.changelog import resolve_github_repo
+                repo = resolve_github_repo(client, conn, image)
+                if repo:
+                    resolved.append((image, repo))
+                    click.echo(f" ✅ {repo}", err=True)
+                else:
+                    unresolved.append(image)
+                    click.echo(f" ❌", err=True)
+            except Exception:
+                unresolved.append(image)
+                click.echo(f" ❌", err=True)
+
+    # Summary
+    click.echo("")
+    if already_mapped:
+        click.echo(f"Already mapped ({len(already_mapped)}):")
+        for image, repo in already_mapped:
+            click.echo(f"  {image} → {repo}")
+
+    if resolved:
+        click.echo(f"\nAuto-resolved ({len(resolved)}):")
+        for image, repo in resolved:
+            click.echo(f"  {image} → {repo}")
+
+    if unresolved:
+        click.echo(f"\nCould not resolve ({len(unresolved)}):")
+        for image in unresolved:
+            click.echo(f"  {image}")
+        click.echo(f"\nAdd mappings manually:")
+        for image in unresolved:
+            click.echo(f"  shiplog map {image} <owner/repo>")
+
+    total = len(already_mapped) + len(resolved)
+    click.echo(f"\n{total}/{len(images)} images mapped. {len(unresolved)} need manual mapping.")
+
+
+def _normalize_image(image: str) -> str:
+    """Normalize an image ref to include the registry.
+
+    traefik:v3 -> docker.io/library/traefik
+    vaultwarden/server -> docker.io/vaultwarden/server
+    ghcr.io/foo/bar -> ghcr.io/foo/bar
+    lscr.io/linuxserver/sonarr -> lscr.io/linuxserver/sonarr
+    """
+    # Strip tag first
+    name, _ = split_image_ref(image)
+
+    # Already has a registry (contains a dot before the first slash)
+    if "/" in name:
+        first_part = name.split("/")[0]
+        if "." in first_part or ":" in first_part:
+            return name
+        # namespace/image without registry -> docker.io
+        return f"docker.io/{name}"
+
+    # Bare image name (e.g. "nginx") -> docker.io/library/name
+    return f"docker.io/library/{name}"
+
+
+def _extract_images_from_compose(path: str) -> dict[str, str]:
+    """Extract image -> tag pairs from a docker-compose file."""
+    import yaml
+
+    with open(path) as f:
+        data = yaml.safe_load(f)
+
+    if not data or not isinstance(data, dict):
+        return {}
+
+    services = data.get("services", {})
+    if not isinstance(services, dict):
+        return {}
+
+    images: dict[str, str] = {}
+    for _name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        raw = svc.get("image")
+        if not raw or not isinstance(raw, str):
+            continue
+        normalized = _normalize_image(raw)
+        _, tag = split_image_ref(raw)
+        images[normalized] = tag
+
+    return images
 
 
 @cli.command()

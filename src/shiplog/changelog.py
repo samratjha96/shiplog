@@ -174,7 +174,24 @@ def resolve_github_repo(
                 db.set_github_mapping(conn, image, candidate, auto_detected=True)
                 return candidate
 
-    # 3. Docker Hub — scrape description for GitHub URLs
+    # 3. lscr.io — LinuxServer images, also published on Docker Hub
+    if image.startswith("lscr.io/"):
+        parts = image.removeprefix("lscr.io/").split("/")
+        if len(parts) >= 2:
+            docker_hub_image = f"docker.io/{parts[0]}/{parts[1]}"
+            candidates = _try_docker_hub_description(client, docker_hub_image)
+            for candidate in candidates:
+                if validate_github_repo(client, candidate):
+                    resp = _github_get(
+                        client,
+                        f"{GITHUB_API}/repos/{candidate}/releases",
+                        params={"per_page": 1},
+                    )
+                    if resp is not None and resp.status_code == 200 and resp.json():
+                        db.set_github_mapping(conn, image, candidate, auto_detected=True)
+                        return candidate
+
+    # 4. Docker Hub — scrape description for GitHub URLs
     #    Try all candidates, prefer the first one that has releases
     #    (avoids picking e.g. traefik-library-image over traefik/traefik)
     candidates = _try_docker_hub_description(client, image)
