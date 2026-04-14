@@ -219,6 +219,43 @@ def resolve_github_repo(
         db.set_github_mapping(conn, image, best, auto_detected=True)
         return best
 
+    # 5. Last resort: try namespace/name as a GitHub repo directly.
+    #    Many projects use the same owner/repo on GitHub and Docker Hub
+    #    (e.g. grafana/grafana, jellyfin/jellyfin). Validated via API.
+    candidate = _image_to_github_candidate(image)
+    if candidate and validate_github_repo(client, candidate):
+        resp = _github_get(
+            client,
+            f"{GITHUB_API}/repos/{candidate}/releases",
+            params={"per_page": 1},
+        )
+        if resp is not None and resp.status_code == 200 and resp.json():
+            db.set_github_mapping(conn, image, candidate, auto_detected=True)
+            return candidate
+
+    return None
+
+
+def _image_to_github_candidate(image: str) -> str | None:
+    """Extract a namespace/name candidate from a Docker image ref.
+
+    docker.io/grafana/grafana -> grafana/grafana
+    docker.io/library/traefik -> None (official images, no useful owner)
+    ghcr.io/foo/bar -> None (already handled by ghcr.io strategy)
+    lscr.io/foo/bar -> None (already handled by lscr.io strategy)
+    """
+    img = image
+    for prefix in ("docker.io/", "index.docker.io/", "registry-1.docker.io/"):
+        if img.startswith(prefix):
+            img = img[len(prefix):]
+            break
+    else:
+        # Not a docker.io image — other registries handled by earlier strategies
+        return None
+
+    parts = img.split("/")
+    if len(parts) == 2 and parts[0] != "library":
+        return f"{parts[0]}/{parts[1]}"
     return None
 
 
