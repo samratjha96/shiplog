@@ -7,7 +7,6 @@ import httpx
 
 from shiplog.changelog import Changelog
 
-LLM_API_URL = "https://your-llm-api.example.com/v1/chat/completions"
 DEFAULT_MODEL = "gcp/google/gemini-2.5-flash-lite"
 
 SYSTEM_PROMPT = """\
@@ -87,10 +86,15 @@ def analyze(
     Raises if LLM_API_KEY is not set or API call fails.
     """
     api_key = os.environ.get("LLM_API_KEY")
+    api_url = os.environ.get("LLM_API_URL")
     if not api_key:
         raise RuntimeError(
-            "LLM_API_KEY environment variable is not set.\n"
-            "Get a key from the OpenAI-compatible inference API portal and export it."
+            "LLM_API_KEY is not set. Add it to your .env file."
+        )
+    if not api_url:
+        raise RuntimeError(
+            "LLM_API_URL is not set. Add it to your .env file.\n"
+            "Example: LLM_API_URL=https://api.openai.com/v1/chat/completions"
         )
 
     model_used = model or DEFAULT_MODEL
@@ -98,7 +102,7 @@ def analyze(
 
     with httpx.Client(timeout=180.0) as client:
         resp = client.post(
-            LLM_API_URL,
+            api_url,
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",

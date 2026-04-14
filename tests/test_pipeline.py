@@ -311,8 +311,8 @@ class TestFullOfflinePipeline:
     def test_full_pipeline_two_images(self, runner, db_path):
         """Ingest two images, generate a report, verify the full flow."""
 
-        # 1. Ingest
-        env = {
+        # 1. Ingest via diun env vars
+        env1 = {
             "DIUN_ENTRY_STATUS": "update",
             "DIUN_ENTRY_IMAGE": "docker.io/crazymax/diun:v4.31.0",
             "DIUN_ENTRY_DIGEST": "sha256:abc123",
@@ -320,10 +320,15 @@ class TestFullOfflinePipeline:
             "DIUN_ENTRY_PROVIDER": "docker",
             "DIUN_ENTRY_HUBLINK": "https://hub.docker.com/r/crazymax/diun",
         }
-        result = invoke(runner, ["ingest"], db_path, env=env)
+        result = invoke(runner, ["ingest"], db_path, env=env1)
         assert result.exit_code == 0
 
-        result = invoke(runner, ["test-ingest", "docker.io/vaultwarden/server:1.33.2"], db_path)
+        env2 = {
+            "DIUN_ENTRY_STATUS": "update",
+            "DIUN_ENTRY_IMAGE": "docker.io/vaultwarden/server:1.33.2",
+            "DIUN_ENTRY_PROVIDER": "docker",
+        }
+        result = invoke(runner, ["ingest"], db_path, env=env2)
         assert result.exit_code == 0
 
         # 2. Verify list shows both
@@ -390,20 +395,19 @@ class TestFullOfflinePipeline:
         result = invoke(runner, ["list"], db_path)
         assert "No pending updates" in result.output
 
-        # 6. Show the report
-        result = invoke(runner, ["show", "1"], db_path)
-        assert result.exit_code == 0
-        assert "crazymax/diun" in result.output
-        assert "vaultwarden" in result.output
-        assert "CVE-2025-1234" in result.output or "XSS" in result.output
-
-        # 7. Reports list should have 1 entry
-        result = invoke(runner, ["reports"], db_path)
-        assert "llama-3.3-nemotron" in result.output
+        # 6. Status shows 0 pending, 1 report
+        result = invoke(runner, ["status"], db_path)
+        assert "Pending:        0" in result.output
+        assert "Reports:        1" in result.output
 
     def test_pipeline_with_unresolvable_image(self, runner, db_path):
         """Images without GitHub repos get included with mapping hints."""
-        invoke(runner, ["test-ingest", "registry.local:5000/my-app:v2"], db_path)
+        env = {
+            "DIUN_ENTRY_STATUS": "update",
+            "DIUN_ENTRY_IMAGE": "registry.local:5000/my-app:v2",
+            "DIUN_ENTRY_PROVIDER": "docker",
+        }
+        invoke(runner, ["ingest"], db_path, env=env)
 
         def fake_fetch(client, conn, image, tag):
             return Changelog(
@@ -427,7 +431,12 @@ class TestFullOfflinePipeline:
 
     def test_pipeline_with_output_file(self, runner, db_path, tmp_path):
         """Report written to file contains the full content."""
-        invoke(runner, ["test-ingest", "docker.io/nginx:1.27"], db_path)
+        env = {
+            "DIUN_ENTRY_STATUS": "update",
+            "DIUN_ENTRY_IMAGE": "docker.io/library/nginx:1.27",
+            "DIUN_ENTRY_PROVIDER": "file",
+        }
+        invoke(runner, ["ingest"], db_path, env=env)
 
         def fake_fetch(client, conn, image, tag):
             return Changelog(image=image, github_repo="nginx/nginx", releases=[{

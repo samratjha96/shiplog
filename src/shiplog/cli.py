@@ -1,6 +1,5 @@
 """ShipLog CLI — container update reports powered by AI."""
 
-import json as json_mod
 import os
 import sqlite3
 import sys
@@ -9,11 +8,16 @@ from pathlib import Path
 
 import click
 import httpx
+from dotenv import load_dotenv
+
+# Load .env before anything reads env vars
+load_dotenv()
 
 from shiplog import __version__, db
 from shiplog.analyzer import analyze
 from shiplog.changelog import Changelog, fetch_changelog
 from shiplog.diun import DiunParseError, parse_env, split_image_ref
+from shiplog import ntfy
 
 
 def _connect(ctx: click.Context) -> sqlite3.Connection:
@@ -64,73 +68,13 @@ def ingest(ctx: click.Context) -> None:
     click.echo(f"Ingested: {event.image} ({event.status}) → id={row_id}")
 
 
-@cli.command("test-ingest")
-@click.argument("image_ref")
-@click.option("--status", default="update", help="Status: 'new' or 'update'.")
-@click.pass_context
-def test_ingest(ctx: click.Context, image_ref: str, status: str) -> None:
-    """Manually ingest an image for testing (no diun needed).
-
-    IMAGE_REF is like 'docker.io/crazymax/diun:v4.31.0'
-    """
-    # Split image:tag — handle port numbers (e.g. registry.local:5000/app:v1)
-    image, tag = split_image_ref(image_ref)
-
-    # Auto-generate hub_link
-    hub_link = _generate_hub_link(image)
-
-    conn = _connect(ctx)
-    row_id = db.insert_update(
-        conn,
-        image=image,
-        tag=tag,
-        status=status,
-        hub_link=hub_link,
-    )
-    click.echo(f"Ingested: {image}:{tag} ({status}) → id={row_id}")
-
-
-def _generate_hub_link(image: str) -> str | None:
-    """Generate a registry link for an image."""
-    # Docker Hub
-    for prefix in ("docker.io/", "index.docker.io/"):
-        if image.startswith(prefix):
-            name = image[len(prefix):]
-            if "/" in name:
-                return f"https://hub.docker.com/r/{name}"
-            return None
-
-    # GitHub Container Registry
-    if image.startswith("ghcr.io/"):
-        path = image.removeprefix("ghcr.io/")
-        return f"https://github.com/{path}/pkgs/container/{path.split('/')[-1]}"
-
-    return None
-
-
 @cli.command("list")
 @click.option("--all", "show_all", is_flag=True, help="Show all updates, not just pending.")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for scripting).")
 @click.pass_context
-def list_updates(ctx: click.Context, show_all: bool, as_json: bool) -> None:
+def list_updates(ctx: click.Context, show_all: bool) -> None:
     """List pending (unreported) updates."""
     conn = _connect(ctx)
     rows = db.get_all_updates(conn) if show_all else db.get_pending_updates(conn)
-
-    if as_json:
-        items = [
-            {
-                "id": row["id"],
-                "image": row["image"],
-                "tag": row["tag"],
-                "status": row["status"],
-                "reported": bool(row["reported"]),
-                "ingested_at": row["ingested_at"],
-            }
-            for row in rows
-        ]
-        click.echo(json_mod.dumps(items, indent=2))
-        return
 
     if not rows:
         label = "updates" if show_all else "pending updates"
@@ -242,116 +186,60 @@ def report(ctx: click.Context, dry_run: bool, model: str | None, output_path: st
         update_ids = [row["id"] for row in pending]
         db.mark_reported(conn, update_ids, report_id)
         click.echo(f"\nReport saved (id={report_id}). {len(update_ids)} update(s) marked as reported.", err=True)
+
+        # Send notification
+        if ntfy.is_configured():
+            try:
+                ntfy.send(full_report)
+                click.echo("Notification sent via ntfy.", err=True)
+            except httpx.HTTPError as e:
+                click.echo(f"\u26a0\ufe0f  ntfy notification failed: {e}", err=True)
     else:
         click.echo("\n(Dry run — updates not marked as reported.)", err=True)
 
 
-@cli.command("reports")
-@click.pass_context
-def list_reports(ctx: click.Context) -> None:
-    """List all generated reports."""
-    conn = _connect(ctx)
-    rows = db.get_all_reports(conn)
-
-    if not rows:
-        click.echo("No reports generated yet. Run 'shiplog report' to create one.")
-        return
-
-    for row in rows:
-        click.echo(f"  [{row['id']}] {row['created_at'][:19]}  model={row['model']}")
-
-
-@cli.command()
-@click.argument("report_id", type=int)
-@click.pass_context
-def show(ctx: click.Context, report_id: int) -> None:
-    """Show a previously generated report."""
-    conn = _connect(ctx)
-    row = db.get_report(conn, report_id)
-    if not row:
-        click.echo(f"Report {report_id} not found.", err=True)
-        sys.exit(1)
-    # Report content already includes its own header, just print it
-    click.echo(row["content"])
-    click.echo(f"\n---\nReport #{report_id} | Generated {row['created_at'][:19]} | Model: {row['model']}", err=True)
-
-
 @cli.command("map")
-@click.argument("image")
-@click.argument("github_repo")
+@click.argument("image", required=False)
+@click.argument("github_repo", required=False)
 @click.pass_context
-def map_image(ctx: click.Context, image: str, github_repo: str) -> None:
-    """Map a container image to its GitHub repo.
+def map_image(ctx: click.Context, image: str | None, github_repo: str | None) -> None:
+    """Map a container image to its GitHub repo, or list all mappings.
+
+    \b
+    With no arguments, lists all current mappings.
+    With IMAGE and GITHUB_REPO, creates a new mapping.
 
     Example: shiplog map docker.io/linuxserver/sonarr linuxserver/docker-sonarr
     """
-    # Basic validation
+    conn = _connect(ctx)
+
+    # No args: list mappings
+    if image is None:
+        rows = db.get_all_github_mappings(conn)
+        if not rows:
+            click.echo("No mappings configured. Use 'shiplog map <image> <owner/repo>' to add one.")
+            return
+        for row in rows:
+            auto = " (auto)" if row["auto_detected"] else ""
+            click.echo(f"  {row['image']} → {row['github_repo']}{auto}")
+        return
+
+    # One arg without the other
+    if github_repo is None:
+        click.echo("Usage: shiplog map <image> <owner/repo>", err=True)
+        sys.exit(1)
+
     if "/" not in github_repo or len(github_repo.split("/")) != 2:
         click.echo("Error: github_repo must be 'owner/repo' format.", err=True)
         sys.exit(1)
 
-    conn = _connect(ctx)
     db.set_github_mapping(conn, image, github_repo, auto_detected=False)
     click.echo(f"Mapped: {image} → https://github.com/{github_repo}")
 
 
 @cli.command()
 @click.pass_context
-def mappings(ctx: click.Context) -> None:
-    """Show all image → GitHub repo mappings."""
-    conn = _connect(ctx)
-    rows = db.get_all_github_mappings(conn)
-
-    if not rows:
-        click.echo("No mappings configured. Use 'shiplog map <image> <owner/repo>' to add one.")
-        return
-
-    for row in rows:
-        auto = " (auto)" if row["auto_detected"] else ""
-        click.echo(f"  {row['image']} → {row['github_repo']}{auto}")
-
-
-@cli.command()
-@click.argument("image")
-@click.pass_context
-def unmap(ctx: click.Context, image: str) -> None:
-    """Remove a GitHub repo mapping for an image."""
-    conn = _connect(ctx)
-    existing = db.get_github_mapping(conn, image)
-    if not existing:
-        click.echo(f"No mapping found for {image}.", err=True)
-        sys.exit(1)
-    db.delete_github_mapping(conn, image)
-    click.echo(f"Removed mapping: {image} → {existing}")
-
-
-@cli.command()
-@click.option("--yes", is_flag=True, help="Skip confirmation.")
-@click.pass_context
-def purge(ctx: click.Context, yes: bool) -> None:
-    """Delete all reported updates from the database.
-
-    Keeps pending (unreported) updates and all reports.
-    """
-    conn = _connect(ctx)
-    count = conn.execute("SELECT COUNT(*) as n FROM updates WHERE reported = 1").fetchone()["n"]
-
-    if count == 0:
-        click.echo("Nothing to purge — no reported updates.")
-        return
-
-    if not yes:
-        click.confirm(f"Delete {count} reported update(s)?", abort=True)
-
-    conn.execute("DELETE FROM updates WHERE reported = 1")
-    conn.commit()
-    click.echo(f"Purged {count} reported update(s).")
-
-
-@cli.command()
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for scripting).")
-@click.pass_context
-def status(ctx: click.Context, as_json: bool) -> None:
+def status(ctx: click.Context) -> None:
     """Show ShipLog status and configuration."""
     db_path = db.get_db_path(ctx.obj.get("db_path"))
     conn = _connect(ctx)
@@ -363,21 +251,6 @@ def status(ctx: click.Context, as_json: bool) -> None:
 
     last_report = all_reports[0]["created_at"][:19] if all_reports else None
 
-    if as_json:
-        data = {
-            "database": str(db_path),
-            "total_updates": len(all_updates),
-            "pending": len(pending),
-            "reports": len(all_reports),
-            "last_report": last_report,
-            "mappings": len(all_mappings),
-            "llm_api_key": bool(os.environ.get("LLM_API_KEY")),
-            "github_token": bool(os.environ.get("GITHUB_TOKEN")),
-            "pending_images": sorted({row["image"] for row in pending}),
-        }
-        click.echo(json_mod.dumps(data, indent=2))
-        return
-
     click.echo("ShipLog Status")
     click.echo("=" * 40)
     click.echo(f"  Database:       {db_path}")
@@ -386,8 +259,10 @@ def status(ctx: click.Context, as_json: bool) -> None:
     click.echo(f"  Reports:        {len(all_reports)}")
     click.echo(f"  Last report:    {last_report or 'never'}")
     click.echo(f"  Mappings:       {len(all_mappings)}")
-    click.echo(f"  LLM API key: {'✅ set' if os.environ.get('LLM_API_KEY') else '❌ not set'}")
+    click.echo(f"  LLM API URL:    {'✅ set' if os.environ.get('LLM_API_URL') else '❌ not set'}")
+    click.echo(f"  LLM API key:    {'✅ set' if os.environ.get('LLM_API_KEY') else '❌ not set'}")
     click.echo(f"  GitHub token:   {'✅ set' if os.environ.get('GITHUB_TOKEN') else '⚠️  not set (60 req/hr limit)'}")
+    click.echo(f"  ntfy:           {'✅ ' + os.environ.get('NTFY_TOPIC', '') if ntfy.is_configured() else '⚠️  not configured'}")
 
     if pending:
         images = sorted({row['image'] for row in pending})

@@ -1,6 +1,5 @@
 """Tests for shiplog.cli — Click CLI commands."""
 
-import json
 from unittest.mock import patch
 
 import httpx
@@ -69,73 +68,6 @@ class TestIngest:
         assert "Error" in result.output
 
 
-# --- test-ingest ---
-
-
-class TestTestIngest:
-    def test_basic(self, runner, db_path):
-        result = invoke(runner, ["test-ingest", "docker.io/crazymax/diun:v4.31.0"], db_path)
-        assert result.exit_code == 0
-        assert "Ingested" in result.output
-        assert "docker.io/crazymax/diun" in result.output
-
-        conn = db.connect(db_path)
-        pending = db.get_pending_updates(conn)
-        assert len(pending) == 1
-        assert pending[0]["tag"] == "v4.31.0"
-        assert pending[0]["status"] == "update"
-        conn.close()
-
-    def test_without_tag_defaults_to_latest(self, runner, db_path):
-        result = invoke(runner, ["test-ingest", "docker.io/library/nginx"], db_path)
-        assert result.exit_code == 0
-
-        conn = db.connect(db_path)
-        pending = db.get_pending_updates(conn)
-        assert pending[0]["tag"] == "latest"
-        conn.close()
-
-    def test_custom_status(self, runner, db_path):
-        result = invoke(runner, ["test-ingest", "--status", "new", "docker.io/foo/bar:v1"], db_path)
-        assert result.exit_code == 0
-
-        conn = db.connect(db_path)
-        pending = db.get_pending_updates(conn)
-        assert pending[0]["status"] == "new"
-        conn.close()
-
-    def test_docker_hub_link(self, runner, db_path):
-        invoke(runner, ["test-ingest", "docker.io/crazymax/diun:v4"], db_path)
-        conn = db.connect(db_path)
-        row = db.get_pending_updates(conn)[0]
-        assert row["hub_link"] == "https://hub.docker.com/r/crazymax/diun"
-        conn.close()
-
-    def test_registry_with_port_and_tag(self, runner, db_path):
-        invoke(runner, ["test-ingest", "registry.local:5000/myapp:v1.2"], db_path)
-        conn = db.connect(db_path)
-        row = db.get_pending_updates(conn)[0]
-        assert row["image"] == "registry.local:5000/myapp"
-        assert row["tag"] == "v1.2"
-        conn.close()
-
-    def test_registry_with_port_no_tag(self, runner, db_path):
-        invoke(runner, ["test-ingest", "registry.local:5000/myapp"], db_path)
-        conn = db.connect(db_path)
-        row = db.get_pending_updates(conn)[0]
-        assert row["image"] == "registry.local:5000/myapp"
-        assert row["tag"] == "latest"
-        conn.close()
-
-    def test_ghcr_link(self, runner, db_path):
-        invoke(runner, ["test-ingest", "ghcr.io/immich-app/immich-server:v1.0"], db_path)
-        conn = db.connect(db_path)
-        row = db.get_pending_updates(conn)[0]
-        assert row["hub_link"] is not None
-        assert "github.com" in row["hub_link"]
-        conn.close()
-
-
 # --- list ---
 
 
@@ -146,7 +78,6 @@ class TestList:
         assert "No pending updates" in result.output
 
     def test_with_pending(self, runner, db_path):
-        # Seed data
         conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/foo/bar", tag="v1", status="new")
         db.insert_update(conn, image="docker.io/baz/qux", tag="v2", status="update")
@@ -175,44 +106,6 @@ class TestList:
         assert "img1" in result.output
         assert "img2" in result.output
 
-    def test_json_output(self, runner, db_path):
-        conn = db.connect(db_path)
-        db.insert_update(conn, image="docker.io/foo/bar", tag="v1", status="new")
-        db.insert_update(conn, image="docker.io/baz/qux", tag="v2", status="update")
-        conn.close()
-
-        result = invoke(runner, ["list", "--json"], db_path)
-        assert result.exit_code == 0
-        items = json.loads(result.output)
-        assert len(items) == 2
-        assert items[0]["image"] == "docker.io/foo/bar"
-        assert items[0]["tag"] == "v1"
-        assert items[0]["reported"] is False
-        assert "id" in items[0]
-        assert "ingested_at" in items[0]
-
-    def test_json_output_empty(self, runner, db_path):
-        result = invoke(runner, ["list", "--json"], db_path)
-        assert result.exit_code == 0
-        items = json.loads(result.output)
-        assert items == []
-
-    def test_json_with_all(self, runner, db_path):
-        conn = db.connect(db_path)
-        id1 = db.insert_update(conn, image="img1", tag="v1", status="new")
-        db.insert_update(conn, image="img2", tag="v2", status="new")
-        report_id = db.insert_report(conn, model="test", content="report")
-        db.mark_reported(conn, [id1], report_id)
-        conn.close()
-
-        result = invoke(runner, ["list", "--json", "--all"], db_path)
-        items = json.loads(result.output)
-        assert len(items) == 2
-        reported = [i for i in items if i["reported"]]
-        pending = [i for i in items if not i["reported"]]
-        assert len(reported) == 1
-        assert len(pending) == 1
-
 
 # --- map / mappings ---
 
@@ -223,7 +116,8 @@ class TestMap:
         assert result.exit_code == 0
         assert "Mapped" in result.output
 
-        result = invoke(runner, ["mappings"], db_path)
+        # No args = list mappings
+        result = invoke(runner, ["map"], db_path)
         assert result.exit_code == 0
         assert "docker.io/linuxserver/sonarr" in result.output
         assert "linuxserver/docker-sonarr" in result.output
@@ -233,71 +127,14 @@ class TestMap:
         assert result.exit_code == 1
         assert "owner/repo" in result.output
 
-    def test_mappings_empty(self, runner, db_path):
-        result = invoke(runner, ["mappings"], db_path)
+    def test_map_no_args_empty(self, runner, db_path):
+        result = invoke(runner, ["map"], db_path)
         assert result.exit_code == 0
         assert "No mappings" in result.output
 
-
-# --- unmap ---
-
-
-class TestUnmap:
-    def test_unmap_existing(self, runner, db_path):
-        invoke(runner, ["map", "docker.io/foo/bar", "foo/bar"], db_path)
-        result = invoke(runner, ["unmap", "docker.io/foo/bar"], db_path)
-        assert result.exit_code == 0
-        assert "Removed" in result.output
-
-        # Verify it's gone
-        result = invoke(runner, ["mappings"], db_path)
-        assert "foo/bar" not in result.output
-
-    def test_unmap_nonexistent(self, runner, db_path):
-        result = invoke(runner, ["unmap", "docker.io/nope"], db_path)
+    def test_map_one_arg_errors(self, runner, db_path):
+        result = invoke(runner, ["map", "docker.io/foo/bar"], db_path)
         assert result.exit_code == 1
-        assert "No mapping found" in result.output
-
-
-# --- reports ---
-
-
-class TestReports:
-    def test_reports_empty(self, runner, db_path):
-        result = invoke(runner, ["reports"], db_path)
-        assert result.exit_code == 0
-        assert "No reports" in result.output
-
-    def test_reports_with_data(self, runner, db_path):
-        conn = db.connect(db_path)
-        db.insert_report(conn, model="model-a", content="# Report A")
-        db.insert_report(conn, model="model-b", content="# Report B")
-        conn.close()
-
-        result = invoke(runner, ["reports"], db_path)
-        assert result.exit_code == 0
-        assert "model-a" in result.output
-        assert "model-b" in result.output
-
-
-# --- show ---
-
-
-class TestShow:
-    def test_show_existing(self, runner, db_path):
-        conn = db.connect(db_path)
-        report_id = db.insert_report(conn, model="test-model", content="# Test Report\n\nHello world")
-        conn.close()
-
-        result = invoke(runner, ["show", str(report_id)], db_path)
-        assert result.exit_code == 0
-        assert "Test Report" in result.output
-        assert "Hello world" in result.output
-
-    def test_show_nonexistent(self, runner, db_path):
-        result = invoke(runner, ["show", "999"], db_path)
-        assert result.exit_code == 1
-        assert "not found" in result.output
 
 
 # --- status ---
@@ -337,53 +174,7 @@ class TestStatus:
         result = invoke(runner, ["status"], db_path)
         assert result.exit_code == 0
         assert "Last report:    never" not in result.output
-        # Should show a timestamp, not "never"
         assert "Reports:        1" in result.output
-
-    def test_status_json(self, runner, db_path):
-        conn = db.connect(db_path)
-        db.insert_update(conn, image="img1", tag="v1", status="new")
-        db.set_github_mapping(conn, "img1", "owner/repo")
-        conn.close()
-
-        result = invoke(runner, ["status", "--json"], db_path)
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["total_updates"] == 1
-        assert data["pending"] == 1
-        assert data["mappings"] == 1
-        assert data["last_report"] is None
-        assert "img1" in data["pending_images"]
-        assert isinstance(data["llm_api_key"], bool)
-        assert isinstance(data["github_token"], bool)
-
-
-# --- purge ---
-
-
-class TestPurge:
-    def test_purge_nothing(self, runner, db_path):
-        result = invoke(runner, ["purge", "--yes"], db_path)
-        assert result.exit_code == 0
-        assert "Nothing to purge" in result.output
-
-    def test_purge_reported_updates(self, runner, db_path):
-        conn = db.connect(db_path)
-        id1 = db.insert_update(conn, image="img1", tag="v1", status="new")
-        db.insert_update(conn, image="img2", tag="v2", status="new")  # stays pending
-        report_id = db.insert_report(conn, model="m", content="r")
-        db.mark_reported(conn, [id1], report_id)
-        conn.close()
-
-        result = invoke(runner, ["purge", "--yes"], db_path)
-        assert result.exit_code == 0
-        assert "Purged 1" in result.output
-
-        # Pending update should survive
-        conn = db.connect(db_path)
-        assert len(db.get_pending_updates(conn)) == 1
-        assert len(db.get_all_updates(conn)) == 1
-        conn.close()
 
 
 # --- report ---
@@ -398,7 +189,6 @@ class TestReport:
     @patch("shiplog.cli.fetch_changelog")
     @patch("shiplog.cli.analyze")
     def test_report_dry_run(self, mock_analyze, mock_fetch, runner, db_path):
-        # Seed an update
         conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/foo/bar", tag="v2.0", status="new")
         conn.close()
@@ -440,7 +230,6 @@ class TestReport:
         assert result.exit_code == 0
         assert "Report saved" in result.output
 
-        # Should be marked as reported
         conn = db.connect(db_path)
         pending = db.get_pending_updates(conn)
         assert len(pending) == 0
@@ -451,7 +240,6 @@ class TestReport:
     @patch("shiplog.cli.fetch_changelog")
     @patch("shiplog.cli.analyze")
     def test_report_deduplicates_images_uses_latest_tag(self, mock_analyze, mock_fetch, runner, db_path):
-        """Multiple updates for same image should only fetch changelog once, using the latest tag."""
         conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/foo/bar", tag="v1.0", status="update")
         db.insert_update(conn, image="docker.io/foo/bar", tag="v2.0", status="update")
@@ -467,12 +255,10 @@ class TestReport:
 
         result = invoke(runner, ["report", "--dry-run"], db_path)
         assert result.exit_code == 0
-        # fetch_changelog should only be called once despite 2 updates for same image
         assert mock_fetch.call_count == 1
-        # Should use the latest tag (v2.0), not the first one (v1.0)
         call_args = mock_fetch.call_args
-        assert call_args[0][2] == "docker.io/foo/bar"  # image
-        assert call_args[0][3] == "v2.0"               # tag (latest)
+        assert call_args[0][2] == "docker.io/foo/bar"
+        assert call_args[0][3] == "v2.0"
 
     @patch("shiplog.cli.analyze")
     @patch("shiplog.cli.fetch_changelog")
@@ -525,7 +311,6 @@ class TestReport:
     @patch("shiplog.cli.fetch_changelog")
     @patch("shiplog.cli.analyze")
     def test_report_survives_changelog_fetch_error(self, mock_analyze, mock_fetch, runner, db_path):
-        """If fetching a changelog throws, report still proceeds with an error note."""
         conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/good/image", tag="v1", status="new")
         db.insert_update(conn, image="docker.io/bad/image", tag="v2", status="new")
@@ -542,7 +327,6 @@ class TestReport:
         result = invoke(runner, ["report", "--dry-run"], db_path)
         assert result.exit_code == 0
         assert "ShipLog Report" in result.output
-        # The analyze call should still have received 2 changelogs (one with error)
         assert mock_analyze.call_count == 1
         changelogs_arg = mock_analyze.call_args[0][0]
         assert len(changelogs_arg) == 2
@@ -553,7 +337,6 @@ class TestReport:
     @patch("shiplog.cli.fetch_changelog")
     @patch("shiplog.cli.analyze")
     def test_report_shows_mapping_hints_for_unresolved(self, mock_analyze, mock_fetch, runner, db_path):
-        """Report stderr should show shiplog map hints for images without GitHub repos."""
         conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/good/image", tag="v1", status="new")
         db.insert_update(conn, image="registry.local/private-app", tag="v2", status="new")
@@ -575,7 +358,6 @@ class TestReport:
 
         result = invoke(runner, ["report", "--dry-run"], db_path)
         assert result.exit_code == 0
-        # Stderr should contain the mapping hint
         assert "shiplog map registry.local/private-app" in result.output
         assert "1 image(s) with changelogs" in result.output
         assert "1 image(s) with no GitHub mapping" in result.output
@@ -592,7 +374,6 @@ class TestReport:
 
         result = invoke(runner, ["report", "--model", "custom-model", "--dry-run"], db_path)
         assert result.exit_code == 0
-        # Verify model was passed through
         mock_analyze.assert_called_once()
         call_args = mock_analyze.call_args
         assert call_args.kwargs.get("model") == "custom-model"
@@ -602,52 +383,37 @@ class TestReport:
 
 
 class TestEndToEnd:
-    """Test the full ingest → list → report → show flow."""
-
     @patch("shiplog.cli.fetch_changelog")
     @patch("shiplog.cli.analyze")
     def test_full_flow(self, mock_analyze, mock_fetch, runner, db_path):
-        # 1. Ingest two updates
-        env1 = {
+        # 1. Ingest via diun env vars
+        env = {
             "DIUN_ENTRY_STATUS": "new",
             "DIUN_ENTRY_IMAGE": "docker.io/crazymax/diun:v4.31.0",
             "DIUN_ENTRY_DIGEST": "sha256:abc",
             "DIUN_ENTRY_PLATFORM": "linux/amd64",
             "DIUN_ENTRY_PROVIDER": "docker",
         }
-        result = invoke(runner, ["ingest"], db_path, env=env1)
+        result = invoke(runner, ["ingest"], db_path, env=env)
         assert result.exit_code == 0
 
-        result = invoke(runner, ["test-ingest", "docker.io/linuxserver/sonarr:4.0.17"], db_path)
-        assert result.exit_code == 0
-
-        # 2. List pending — should show both
+        # 2. List pending
         result = invoke(runner, ["list"], db_path)
         assert result.exit_code == 0
         assert "crazymax/diun" in result.output
-        assert "linuxserver/sonarr" in result.output
 
-        # 3. Status should show 2 pending
+        # 3. Status shows 1 pending
         result = invoke(runner, ["status"], db_path)
-        assert "Pending:        2" in result.output
+        assert "Pending:        1" in result.output
 
         # 4. Generate report
-        mock_fetch.side_effect = [
-            Changelog(
-                image="docker.io/crazymax/diun",
-                github_repo="crazy-max/diun",
-                releases=[{"tag_name": "v4.31.0", "name": "v4.31.0", "body": "Bug fixes", "published_at": "2024-01-15"}],
-            ),
-            Changelog(
-                image="docker.io/linuxserver/sonarr",
-                github_repo=None,
-                releases=[],
-                error="No GitHub repo found. Add mapping with: shiplog map docker.io/linuxserver/sonarr <owner/repo>",
-            ),
-        ]
+        mock_fetch.return_value = Changelog(
+            image="docker.io/crazymax/diun",
+            github_repo="crazy-max/diun",
+            releases=[{"tag_name": "v4.31.0", "name": "v4.31.0", "body": "Bug fixes", "published_at": "2024-01-15"}],
+        )
         mock_analyze.return_value = (
-            "## docker.io/crazymax/diun\n**Summary**: Bug fixes\n**Risk**: 🟢 Safe\n\n"
-            "## docker.io/linuxserver/sonarr\n**Summary**: No changelog available\n",
+            "## docker.io/crazymax/diun\n**Summary**: Bug fixes\n**Risk**: 🟢 Safe\n",
             "test-model",
         )
 
@@ -660,12 +426,7 @@ class TestEndToEnd:
         result = invoke(runner, ["list"], db_path)
         assert "No pending updates" in result.output
 
-        # 6. Show the saved report
-        result = invoke(runner, ["show", "1"], db_path)
-        assert result.exit_code == 0
-        assert "crazymax/diun" in result.output
-
-        # 7. Status should show 0 pending, 1 report
+        # 6. Status shows 0 pending, 1 report
         result = invoke(runner, ["status"], db_path)
         assert "Pending:        0" in result.output
         assert "Reports:        1" in result.output
