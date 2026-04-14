@@ -38,11 +38,14 @@ def _github_headers() -> dict[str, str]:
 
 def validate_github_repo(client: httpx.Client, owner_repo: str) -> bool:
     """Confirm a GitHub repo exists by hitting the API. Returns True if 200."""
-    resp = client.get(
-        f"{GITHUB_API}/repos/{owner_repo}",
-        headers=_github_headers(),
-    )
-    return resp.status_code == 200
+    try:
+        resp = client.get(
+            f"{GITHUB_API}/repos/{owner_repo}",
+            headers=_github_headers(),
+        )
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
 
 
 def _extract_github_url(text: str) -> str | None:
@@ -147,11 +150,14 @@ def fetch_releases(
 
     Returns a list of {tag_name, name, body, published_at} dicts.
     """
-    resp = client.get(
-        f"{GITHUB_API}/repos/{github_repo}/releases",
-        headers=_github_headers(),
-        params={"per_page": per_page},
-    )
+    try:
+        resp = client.get(
+            f"{GITHUB_API}/repos/{github_repo}/releases",
+            headers=_github_headers(),
+            params={"per_page": per_page},
+        )
+    except httpx.HTTPError:
+        return []
     if resp.status_code != 200:
         return []
 

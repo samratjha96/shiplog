@@ -1,11 +1,16 @@
 """Tests for shiplog.changelog — GitHub/Docker Hub changelog fetching."""
+from unittest.mock import patch
 
+import httpx
 import pytest
 
 from shiplog import db
-from shiplog.changelog import _extract_github_url, fetch_changelog, validate_github_repo
-
-import httpx
+from shiplog.changelog import (
+    _extract_github_url,
+    fetch_changelog,
+    fetch_releases,
+    validate_github_repo,
+)
 
 
 class TestExtractGitHubUrl:
@@ -55,6 +60,20 @@ class TestValidateGitHubRepo:
     def test_invalid_repo(self):
         with httpx.Client() as client:
             assert validate_github_repo(client, "nonexistent-user-xyz/nonexistent-repo-abc") is False
+
+    def test_network_error_returns_false(self):
+        """Connection failures should return False, not crash."""
+        with httpx.Client() as client:
+            with patch.object(client, "get", side_effect=httpx.ConnectError("timeout")):
+                assert validate_github_repo(client, "any/repo") is False
+
+
+class TestFetchReleases:
+    def test_network_error_returns_empty(self):
+        """Connection failures should return [], not crash."""
+        with httpx.Client() as client:
+            with patch.object(client, "get", side_effect=httpx.ConnectError("timeout")):
+                assert fetch_releases(client, "any/repo") == []
 
 
 class TestFetchChangelog:
