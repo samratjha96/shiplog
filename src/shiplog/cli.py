@@ -10,13 +10,8 @@ import click
 import httpx
 from dotenv import load_dotenv
 
-# Load .env from standard config location, then CWD as fallback
-_config_dir = Path.home() / ".config" / "shiplog"
-_config_env = _config_dir / ".env"
-if _config_env.exists():
-    load_dotenv(_config_env)
-else:
-    load_dotenv()  # CWD fallback
+# dotenv is loaded inside cli() group callback, not at import time,
+# so tests don't leak real config into os.environ.
 
 from shiplog import __version__, db
 from shiplog.analyzer import analyze
@@ -40,6 +35,14 @@ def _connect(ctx: click.Context) -> sqlite3.Connection:
 @click.pass_context
 def cli(ctx: click.Context, db_path: str | None) -> None:
     """ShipLog — AI-powered container update reports."""
+    # Load .env from standard config location, then CWD as fallback.
+    # Done here (not at import time) so tests don't leak real config.
+    config_env = Path.home() / ".config" / "shiplog" / ".env"
+    if config_env.exists():
+        load_dotenv(config_env)
+    else:
+        load_dotenv()  # CWD fallback
+
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = db_path
 

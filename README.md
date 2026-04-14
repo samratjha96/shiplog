@@ -175,7 +175,7 @@ All configuration is via `~/.config/shiplog/.env` (or environment variables).
 |---|---|---|
 | `LLM_API_URL` | Yes | OpenAI-compatible chat completions endpoint |
 | `LLM_API_KEY` | Yes | API key for the LLM endpoint |
-| `LLM_MODEL` | No | Model to use (default: `gcp/google/gemini-2.5-flash-lite`) |
+| `LLM_MODEL` | No | Model to use (default: `gcp/google/gemini-2.5-flash-lite`, `--model` flag takes priority) |
 | `GITHUB_TOKEN` | No | GitHub PAT for higher rate limits |
 | `SHIPLOG_DB_PATH` | No | SQLite path (default: `~/.local/share/shiplog/shiplog.db`) |
 | `NTFY_TOPIC` | No | ntfy topic — enables push notifications |

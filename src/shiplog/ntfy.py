@@ -13,8 +13,8 @@ def is_configured() -> bool:
 def send(report: str, title: str = "ShipLog Report") -> None:
     """Send a report to ntfy. No-op if not configured.
 
-    Converts the markdown report to ntfy-friendly format
-    (ntfy doesn't render # headers).
+    Converts the markdown report to plain text for reliable rendering
+    across all ntfy clients.
 
     Raises httpx errors on failure so the caller can handle them.
     """
