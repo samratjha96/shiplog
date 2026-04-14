@@ -24,6 +24,14 @@ class TestSchema:
         assert "reports" in names
         assert "github_mappings" in names
 
+    def test_indices_exist(self, conn):
+        indices = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' ORDER BY name"
+        ).fetchall()
+        names = [i["name"] for i in indices]
+        assert "idx_updates_reported" in names
+        assert "idx_updates_image" in names
+
     def test_connect_is_idempotent(self, tmp_path):
         """Calling connect twice on the same DB doesn't crash."""
         path = tmp_path / "test.db"

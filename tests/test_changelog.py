@@ -1,5 +1,5 @@
 """Tests for shiplog.changelog — GitHub/Docker Hub changelog fetching."""
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 import httpx
 import pytest
@@ -7,6 +7,7 @@ import pytest
 from shiplog import db
 from shiplog.changelog import (
     _extract_github_url,
+    _github_get,
     fetch_changelog,
     fetch_releases,
     validate_github_repo,
@@ -78,6 +79,121 @@ class TestValidateGitHubRepo:
         with httpx.Client() as client:
             with patch.object(client, "get", side_effect=httpx.ConnectError("timeout")):
                 assert validate_github_repo(client, "any/repo") is False
+
+
+class TestGitHubRateLimit:
+    """Test _github_get rate limit detection and retry."""
+
+    def test_rate_limit_403_retries(self):
+        """403 with x-ratelimit-remaining: 0 triggers retry."""
+        rate_limited = httpx.Response(
+            403,
+            headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "0"},
+            request=httpx.Request("GET", "https://api.github.com/repos/o/r"),
+        )
+        ok = httpx.Response(
+            200,
+            json={"id": 1},
+            request=httpx.Request("GET", "https://api.github.com/repos/o/r"),
+        )
+
+        mock_sleep = MagicMock()
+        with httpx.Client() as client:
+            with patch.object(client, "get", side_effect=[rate_limited, ok]):
+                resp = _github_get(client, "https://api.github.com/repos/o/r", _sleep=mock_sleep)
+
+        assert resp is not None
+        assert resp.status_code == 200
+        mock_sleep.assert_called_once()  # slept once before retry
+
+    def test_rate_limit_429_retries(self):
+        """429 responses trigger retry."""
+        throttled = httpx.Response(
+            429,
+            request=httpx.Request("GET", "https://api.github.com/repos/o/r"),
+        )
+        ok = httpx.Response(
+            200,
+            json={"id": 1},
+            request=httpx.Request("GET", "https://api.github.com/repos/o/r"),
+        )
+
+        mock_sleep = MagicMock()
+        with httpx.Client() as client:
+            with patch.object(client, "get", side_effect=[throttled, ok]):
+                resp = _github_get(client, "https://api.github.com/repos/o/r", _sleep=mock_sleep)
+
+        assert resp is not None
+        assert resp.status_code == 200
+        mock_sleep.assert_called_once()
+
+    def test_rate_limit_exhausts_retries(self):
+        """After max retries, returns the last 403 response."""
+        rate_limited = httpx.Response(
+            403,
+            headers={"x-ratelimit-remaining": "0"},
+            request=httpx.Request("GET", "https://api.github.com/repos/o/r"),
+        )
+
+        mock_sleep = MagicMock()
+        with httpx.Client() as client:
+            with patch.object(client, "get", return_value=rate_limited):
+                resp = _github_get(client, "https://api.github.com/repos/o/r", _sleep=mock_sleep)
+
+        assert resp is not None
+        assert resp.status_code == 403
+        assert mock_sleep.call_count == 3  # _MAX_RETRIES
+
+    def test_403_without_rate_limit_header_not_retried(self):
+        """403 without rate limit headers is not a rate limit — don't retry."""
+        forbidden = httpx.Response(
+            403,
+            request=httpx.Request("GET", "https://api.github.com/repos/o/r"),
+        )
+
+        mock_sleep = MagicMock()
+        with httpx.Client() as client:
+            with patch.object(client, "get", return_value=forbidden):
+                resp = _github_get(client, "https://api.github.com/repos/o/r", _sleep=mock_sleep)
+
+        assert resp is not None
+        assert resp.status_code == 403
+        mock_sleep.assert_not_called()
+
+    def test_network_error_returns_none(self):
+        """Connection failures return None."""
+        mock_sleep = MagicMock()
+        with httpx.Client() as client:
+            with patch.object(client, "get", side_effect=httpx.ConnectError("timeout")):
+                resp = _github_get(client, "https://api.github.com/repos/o/r", _sleep=mock_sleep)
+
+        assert resp is None
+        mock_sleep.assert_not_called()
+
+    def test_uses_reset_header_for_wait_time(self):
+        """When x-ratelimit-reset is set, use it to calculate wait time."""
+        import time as _time
+
+        future_reset = str(int(_time.time()) + 15)
+        rate_limited = httpx.Response(
+            403,
+            headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": future_reset},
+            request=httpx.Request("GET", "https://api.github.com/repos/o/r"),
+        )
+        ok = httpx.Response(
+            200,
+            json={},
+            request=httpx.Request("GET", "https://api.github.com/repos/o/r"),
+        )
+
+        mock_sleep = MagicMock()
+        with httpx.Client() as client:
+            with patch.object(client, "get", side_effect=[rate_limited, ok]):
+                _github_get(client, "https://api.github.com/repos/o/r", _sleep=mock_sleep)
+
+        # Should sleep for roughly 15 seconds (the reset header value)
+        wait_arg = mock_sleep.call_args[0][0]
+        assert 10 <= wait_arg <= 20
 
 
 class TestFetchReleases:

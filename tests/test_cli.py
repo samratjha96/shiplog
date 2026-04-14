@@ -492,6 +492,34 @@ class TestReport:
         assert "ShipLog Report" in written
         assert "Report content here" in written
 
+    @patch("shiplog.cli.fetch_changelog")
+    @patch("shiplog.cli.analyze")
+    def test_report_survives_changelog_fetch_error(self, mock_analyze, mock_fetch, runner, db_path):
+        """If fetching a changelog throws, report still proceeds with an error note."""
+        conn = db.connect(db_path)
+        db.insert_update(conn, image="docker.io/good/image", tag="v1", status="new")
+        db.insert_update(conn, image="docker.io/bad/image", tag="v2", status="new")
+        conn.close()
+
+        def side_effect(client, conn, image, tag):
+            if "bad" in image:
+                raise ValueError("Unexpected JSON decode error")
+            return Changelog(image=image, github_repo="good/image", releases=[])
+
+        mock_fetch.side_effect = side_effect
+        mock_analyze.return_value = ("Report content", "test-model")
+
+        result = invoke(runner, ["report", "--dry-run"], db_path)
+        assert result.exit_code == 0
+        assert "ShipLog Report" in result.output
+        # The analyze call should still have received 2 changelogs (one with error)
+        assert mock_analyze.call_count == 1
+        changelogs_arg = mock_analyze.call_args[0][0]
+        assert len(changelogs_arg) == 2
+        errors = [cl for cl in changelogs_arg if cl.error]
+        assert len(errors) == 1
+        assert "Unexpected JSON decode error" in errors[0].error
+
     @patch("shiplog.cli.analyze")
     @patch("shiplog.cli.fetch_changelog")
     def test_report_model_override(self, mock_fetch, mock_analyze, runner, db_path):

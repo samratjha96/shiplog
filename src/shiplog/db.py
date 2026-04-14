@@ -66,6 +66,11 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             github_repo TEXT NOT NULL,
             auto_detected INTEGER DEFAULT 0
         );
+
+        CREATE INDEX IF NOT EXISTS idx_updates_reported
+            ON updates(reported);
+        CREATE INDEX IF NOT EXISTS idx_updates_image
+            ON updates(image);
     """)
 
 

@@ -3,6 +3,8 @@
 import os
 import re
 import sqlite3
+import sys
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -12,6 +14,10 @@ from shiplog import db
 GITHUB_API = "https://api.github.com"
 DOCKER_HUB_API = "https://hub.docker.com/v2"
 USER_AGENT = "ShipLog/0.1 (container-update-reporter)"
+
+# Max retries for rate-limited GitHub requests
+_MAX_RETRIES = 3
+_RATE_LIMIT_BACKOFF_SECONDS = [5, 30, 60]  # escalating backoff
 
 
 @dataclass
@@ -36,16 +42,69 @@ def _github_headers() -> dict[str, str]:
     return headers
 
 
+def _github_get(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: dict | None = None,
+    _sleep: object = time.sleep,
+) -> httpx.Response | None:
+    """Make a GitHub API GET request with rate limit retry.
+
+    Returns the Response on success (any status code), or None on network error.
+    On 403 with rate limit headers, waits and retries up to _MAX_RETRIES times.
+    """
+    headers = _github_headers()
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            resp = client.get(url, headers=headers, params=params)
+        except httpx.HTTPError:
+            return None
+
+        # Check for rate limiting (403 with X-RateLimit-Remaining: 0)
+        if resp.status_code == 403:
+            remaining = resp.headers.get("x-ratelimit-remaining")
+            if remaining == "0" and attempt < _MAX_RETRIES:
+                # Calculate wait time from reset header or use backoff
+                reset_at = resp.headers.get("x-ratelimit-reset")
+                if reset_at:
+                    try:
+                        wait = max(1, int(reset_at) - int(time.time()))
+                        wait = min(wait, 120)  # cap at 2 minutes
+                    except ValueError:
+                        wait = _RATE_LIMIT_BACKOFF_SECONDS[attempt]
+                else:
+                    wait = _RATE_LIMIT_BACKOFF_SECONDS[attempt]
+
+                print(
+                    f"  ⚠️  GitHub rate limit hit. Waiting {wait}s before retry "
+                    f"({attempt + 1}/{_MAX_RETRIES})...",
+                    file=sys.stderr,
+                )
+                _sleep(wait)
+                continue
+
+        # 429 Too Many Requests — also rate limited
+        if resp.status_code == 429 and attempt < _MAX_RETRIES:
+            wait = _RATE_LIMIT_BACKOFF_SECONDS[min(attempt, len(_RATE_LIMIT_BACKOFF_SECONDS) - 1)]
+            print(
+                f"  ⚠️  GitHub rate limit (429). Waiting {wait}s before retry "
+                f"({attempt + 1}/{_MAX_RETRIES})...",
+                file=sys.stderr,
+            )
+            _sleep(wait)
+            continue
+
+        return resp
+
+    # Exhausted retries — return the last response
+    return resp  # type: ignore[possibly-undefined]
+
+
 def validate_github_repo(client: httpx.Client, owner_repo: str) -> bool:
     """Confirm a GitHub repo exists by hitting the API. Returns True if 200."""
-    try:
-        resp = client.get(
-            f"{GITHUB_API}/repos/{owner_repo}",
-            headers=_github_headers(),
-        )
-        return resp.status_code == 200
-    except httpx.HTTPError:
-        return False
+    resp = _github_get(client, f"{GITHUB_API}/repos/{owner_repo}")
+    return resp is not None and resp.status_code == 200
 
 
 # GitHub paths that look like owner/repo but aren't actual repositories.
@@ -163,15 +222,12 @@ def fetch_releases(
 
     Returns a list of {tag_name, name, body, published_at} dicts.
     """
-    try:
-        resp = client.get(
-            f"{GITHUB_API}/repos/{github_repo}/releases",
-            headers=_github_headers(),
-            params={"per_page": per_page},
-        )
-    except httpx.HTTPError:
-        return []
-    if resp.status_code != 200:
+    resp = _github_get(
+        client,
+        f"{GITHUB_API}/repos/{github_repo}/releases",
+        params={"per_page": per_page},
+    )
+    if resp is None or resp.status_code != 200:
         return []
 
     releases = resp.json()

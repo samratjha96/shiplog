@@ -11,7 +11,7 @@ import httpx
 from shiplog import db
 from shiplog.analyzer import analyze
 from shiplog.changelog import Changelog, fetch_changelog
-from shiplog.diun import DiunParseError, parse_env
+from shiplog.diun import DiunParseError, parse_env, split_image_ref
 
 
 def _connect(ctx: click.Context) -> sqlite3.Connection:
@@ -71,7 +71,7 @@ def test_ingest(ctx: click.Context, image_ref: str, status: str) -> None:
     IMAGE_REF is like 'docker.io/crazymax/diun:v4.31.0'
     """
     # Split image:tag — handle port numbers (e.g. registry.local:5000/app:v1)
-    image, tag = _split_image_ref(image_ref)
+    image, tag = split_image_ref(image_ref)
 
     # Auto-generate hub_link
     hub_link = _generate_hub_link(image)
@@ -87,26 +87,8 @@ def test_ingest(ctx: click.Context, image_ref: str, status: str) -> None:
     click.echo(f"Ingested: {image}:{tag} ({status}) → id={row_id}")
 
 
-def _split_image_ref(ref: str) -> tuple[str, str]:
-    """Split an image reference into (image, tag).
-
-    Handles port numbers: 'registry.local:5000/app:v1' → ('registry.local:5000/app', 'v1')
-    Without tag: 'registry.local:5000/app' → ('registry.local:5000/app', 'latest')
-    """
-    # If there's a slash, the tag (if any) is after the last colon that comes after the last slash
-    if "/" in ref:
-        last_slash = ref.rfind("/")
-        after_slash = ref[last_slash + 1:]
-        if ":" in after_slash:
-            colon_pos = last_slash + 1 + after_slash.rfind(":")
-            return ref[:colon_pos], ref[colon_pos + 1:]
-        return ref, "latest"
-
-    # No slash — simple name:tag or just name
-    if ":" in ref:
-        parts = ref.rsplit(":", 1)
-        return parts[0], parts[1]
-    return ref, "latest"
+# _split_image_ref kept as alias for test compatibility
+_split_image_ref = split_image_ref
 
 
 def _generate_hub_link(image: str) -> str | None:
@@ -176,7 +158,16 @@ def report(ctx: click.Context, dry_run: bool, model: str | None, output_path: st
 
         for image, tag in latest_by_image.items():
             click.echo(f"  Fetching changelog for {image}:{tag}...", err=True)
-            cl = fetch_changelog(client, conn, image, tag)
+            try:
+                cl = fetch_changelog(client, conn, image, tag)
+            except Exception as e:
+                click.echo(f"  ⚠️  Failed to fetch changelog for {image}: {e}", err=True)
+                cl = Changelog(
+                    image=image,
+                    github_repo=None,
+                    releases=[],
+                    error=f"Changelog fetch failed: {e}",
+                )
             changelogs.append(cl)
 
     if not changelogs:

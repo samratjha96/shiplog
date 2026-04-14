@@ -18,14 +18,35 @@ class DiunEvent:
     @property
     def image_name(self) -> str:
         """Image without tag — e.g. 'docker.io/crazymax/diun'."""
-        return self.image.rsplit(":", 1)[0] if ":" in self.image else self.image
+        name, _ = split_image_ref(self.image)
+        return name
 
     @property
     def tag(self) -> str:
         """Tag portion — e.g. 'v4.31.0'. Defaults to 'latest'."""
-        if ":" in self.image:
-            return self.image.rsplit(":", 1)[1]
-        return "latest"
+        _, tag = split_image_ref(self.image)
+        return tag
+
+
+def split_image_ref(ref: str) -> tuple[str, str]:
+    """Split an image reference into (image, tag).
+
+    Handles port numbers: 'registry.local:5000/app:v1' → ('registry.local:5000/app', 'v1')
+    Without tag: 'registry.local:5000/app' → ('registry.local:5000/app', 'latest')
+    """
+    if "/" in ref:
+        last_slash = ref.rfind("/")
+        after_slash = ref[last_slash + 1:]
+        if ":" in after_slash:
+            colon_pos = last_slash + 1 + after_slash.rfind(":")
+            return ref[:colon_pos], ref[colon_pos + 1:]
+        return ref, "latest"
+
+    # No slash — simple name:tag or just name
+    if ":" in ref:
+        parts = ref.rsplit(":", 1)
+        return parts[0], parts[1]
+    return ref, "latest"
 
 
 class DiunParseError(Exception):

@@ -2,7 +2,7 @@
 
 import pytest
 
-from shiplog.diun import DiunEvent, DiunParseError, parse_env
+from shiplog.diun import DiunEvent, DiunParseError, parse_env, split_image_ref
 
 
 class TestParseEnv:
@@ -61,6 +61,35 @@ class TestParseEnv:
         assert event.tag == "latest"
 
 
+class TestSplitImageRef:
+    def test_standard_image_with_tag(self):
+        assert split_image_ref("docker.io/foo/bar:v1") == ("docker.io/foo/bar", "v1")
+
+    def test_no_tag_defaults_to_latest(self):
+        assert split_image_ref("docker.io/foo/bar") == ("docker.io/foo/bar", "latest")
+
+    def test_port_with_tag(self):
+        assert split_image_ref("registry.local:5000/app:v2") == ("registry.local:5000/app", "v2")
+
+    def test_port_without_tag(self):
+        assert split_image_ref("registry.local:5000/app") == ("registry.local:5000/app", "latest")
+
+    def test_port_deep_path_with_tag(self):
+        assert split_image_ref("registry.local:5000/org/app:v3") == ("registry.local:5000/org/app", "v3")
+
+    def test_port_deep_path_without_tag(self):
+        assert split_image_ref("registry.local:5000/org/app") == ("registry.local:5000/org/app", "latest")
+
+    def test_simple_name_with_tag(self):
+        assert split_image_ref("nginx:alpine") == ("nginx", "alpine")
+
+    def test_simple_name_without_tag(self):
+        assert split_image_ref("nginx") == ("nginx", "latest")
+
+    def test_ghcr(self):
+        assert split_image_ref("ghcr.io/owner/repo:sha-abc") == ("ghcr.io/owner/repo", "sha-abc")
+
+
 class TestDiunEvent:
     def test_image_name_strips_tag(self):
         e = DiunEvent(
@@ -70,10 +99,34 @@ class TestDiunEvent:
         assert e.image_name == "ghcr.io/foo/bar"
         assert e.tag == "v2.0.0"
 
-    def test_image_with_port(self):
+    def test_image_with_port_and_tag(self):
         e = DiunEvent(
             status="new", image="registry.local:5000/myapp:1.0",
             hub_link="", digest="", created="", platform="", provider="",
         )
         assert e.image_name == "registry.local:5000/myapp"
         assert e.tag == "1.0"
+
+    def test_image_with_port_no_tag(self):
+        e = DiunEvent(
+            status="new", image="registry.local:5000/myapp",
+            hub_link="", digest="", created="", platform="", provider="",
+        )
+        assert e.image_name == "registry.local:5000/myapp"
+        assert e.tag == "latest"
+
+    def test_image_with_port_deep_path_and_tag(self):
+        e = DiunEvent(
+            status="new", image="registry.local:5000/org/app:v2",
+            hub_link="", digest="", created="", platform="", provider="",
+        )
+        assert e.image_name == "registry.local:5000/org/app"
+        assert e.tag == "v2"
+
+    def test_image_with_port_deep_path_no_tag(self):
+        e = DiunEvent(
+            status="new", image="registry.local:5000/org/app",
+            hub_link="", digest="", created="", platform="", provider="",
+        )
+        assert e.image_name == "registry.local:5000/org/app"
+        assert e.tag == "latest"
