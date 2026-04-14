@@ -2,47 +2,73 @@
 
 from unittest.mock import patch
 
-from shiplog.ntfy import _markdown_to_ntfy, is_configured, send
+from shiplog.ntfy import _markdown_to_plain, is_configured, send
 
 
-class TestMarkdownToNtfy:
-    def test_h1_becomes_bold(self):
-        assert _markdown_to_ntfy("# Hello") == "**Hello**"
+class TestMarkdownToPlain:
+    def test_h1_becomes_uppercase(self):
+        assert _markdown_to_plain("# Hello") == "HELLO"
 
-    def test_h2_becomes_bold(self):
-        assert _markdown_to_ntfy("## Section") == "**Section**"
+    def test_h2_becomes_uppercase(self):
+        assert _markdown_to_plain("## Section Title") == "SECTION TITLE"
 
-    def test_h3_becomes_bold(self):
-        assert _markdown_to_ntfy("### Subsection") == "**Subsection**"
-
-    def test_h6_becomes_bold(self):
-        assert _markdown_to_ntfy("###### Deep") == "**Deep**"
+    def test_h3_becomes_uppercase(self):
+        assert _markdown_to_plain("### Sub") == "SUB"
 
     def test_non_header_unchanged(self):
-        assert _markdown_to_ntfy("Just text") == "Just text"
+        assert _markdown_to_plain("Just text") == "Just text"
 
-    def test_bold_unchanged(self):
-        assert _markdown_to_ntfy("**already bold**") == "**already bold**"
+    def test_bold_becomes_uppercase(self):
+        assert _markdown_to_plain("**Summary**: Bug fix") == "SUMMARY: Bug fix"
 
-    def test_bullet_list_unchanged(self):
-        assert _markdown_to_ntfy("- item one") == "- item one"
+    def test_multiple_bold_in_line(self):
+        assert _markdown_to_plain("**Risk**: 🟢 **Safe**") == "RISK: 🟢 SAFE"
+
+    def test_italic_stripped(self):
+        assert _markdown_to_plain("*Model: test*") == "Model: test"
+
+    def test_backtick_code_stripped(self):
+        assert _markdown_to_plain("Run `shiplog report`") == "Run shiplog report"
+
+    def test_link_converted(self):
+        assert _markdown_to_plain("[click here](https://example.com)") == "click here (https://example.com)"
+
+    def test_bullet_dash_to_dot(self):
+        assert _markdown_to_plain("- item one") == "• item one"
+
+    def test_bullet_asterisk_to_dot(self):
+        assert _markdown_to_plain("* item one") == "• item one"
+
+    def test_nested_bullet_preserved(self):
+        assert _markdown_to_plain("  - nested") == "  • nested"
 
     def test_empty_string(self):
-        assert _markdown_to_ntfy("") == ""
+        assert _markdown_to_plain("") == ""
 
     def test_header_with_emoji(self):
-        assert _markdown_to_ntfy("## TL;DR 🟢") == "**TL;DR 🟢**"
+        assert _markdown_to_plain("## TL;DR 🟢") == "TL;DR 🟢"
 
     def test_header_with_arrow(self):
-        assert _markdown_to_ntfy("## docker.io/traefik/traefik → v3.6.13") == "**docker.io/traefik/traefik → v3.6.13**"
+        assert _markdown_to_plain("## docker.io/traefik → v3.6.13") == "DOCKER.IO/TRAEFIK → V3.6.13"
 
-    def test_mixed_content(self):
+    def test_hash_in_middle_not_converted(self):
+        assert _markdown_to_plain("Issue #123 fixed") == "Issue #123 fixed"
+
+    def test_hash_no_space_not_converted(self):
+        assert _markdown_to_plain("#notaheader") == "#notaheader"
+
+    def test_multiline_preserves_blank_lines(self):
+        text = "# Title\n\nParagraph\n\n## Section"
+        result = _markdown_to_plain(text)
+        assert result == "TITLE\n\nParagraph\n\nSECTION"
+
+    def test_full_report(self):
         report = (
-            "# ShipLog Report\n"
+            "# ShipLog Report — 2025-01-15\n"
             "\n"
-            "*Model: test*\n"
+            "*Model: gcp/google/gemini-2.5-flash-lite*\n"
             "\n"
-            "## traefik → v3.6.13\n"
+            "## docker.io/traefik/traefik → v3.6.13\n"
             "\n"
             "**Summary**: Bug fixes.\n"
             "**Risk Level**: 🟢 Safe\n"
@@ -54,34 +80,20 @@ class TestMarkdownToNtfy:
             "## TL;DR\n"
             "All safe."
         )
-        result = _markdown_to_ntfy(report)
+        result = _markdown_to_plain(report)
 
-        assert "**ShipLog Report**" in result
-        assert "**traefik → v3.6.13**" in result
-        assert "**TL;DR**" in result
-        # Non-headers preserved
-        assert "*Model: test*" in result
-        assert "- Fix annotation handling" in result
-        assert "- Bump dependency" in result
+        assert "SHIPLOG REPORT — 2025-01-15" in result
+        assert "DOCKER.IO/TRAEFIK/TRAEFIK → V3.6.13" in result
+        assert "TL;DR" in result
+        assert "SUMMARY: Bug fixes." in result
+        assert "RISK LEVEL: 🟢 Safe" in result  # Safe not uppercased (not bold)
+        assert "• Fix annotation handling" in result
+        assert "• Bump dependency" in result
+        assert "Model: gcp/google/gemini-2.5-flash-lite" in result  # italic stripped
         assert "All safe." in result
-        # No raw # left
-        assert "\n# " not in result
-        assert "\n## " not in result
-
-    def test_hash_in_middle_of_line_not_converted(self):
-        assert _markdown_to_ntfy("Issue #123 fixed") == "Issue #123 fixed"
-
-    def test_code_with_hash_unchanged(self):
-        assert _markdown_to_ntfy("`# comment`") == "`# comment`"
-
-    def test_multiline_preserves_blank_lines(self):
-        text = "# Title\n\nParagraph\n\n## Section"
-        result = _markdown_to_ntfy(text)
-        assert result == "**Title**\n\nParagraph\n\n**Section**"
-
-    def test_header_no_space_not_converted(self):
-        # "#word" without space is not a markdown header
-        assert _markdown_to_ntfy("#notaheader") == "#notaheader"
+        # No markdown artifacts
+        assert "**" not in result
+        assert "##" not in result
 
 
 class TestIsConfigured:
@@ -101,7 +113,6 @@ class TestIsConfigured:
 class TestSend:
     def test_noop_when_not_configured(self):
         with patch.dict("os.environ", {}, clear=True):
-            # Should not raise, just no-op
             send("report text")
 
     def test_sends_with_correct_headers(self):
@@ -123,11 +134,11 @@ class TestSend:
                 headers = call_args[1]["headers"]
                 assert headers["Title"] == "Test Title"
                 assert headers["Priority"] == "5"
-                assert headers["Markdown"] == "yes"
                 assert headers["Authorization"] == "Bearer tk_secret"
-                # Body should have converted headers
+                assert "Markdown" not in headers
+                # Body should be plain text
                 body = call_args[1]["content"].decode("utf-8")
-                assert "**Report**" in body
+                assert "REPORT" in body
                 assert "# Report" not in body
 
     def test_default_endpoint_is_ntfy_sh(self):

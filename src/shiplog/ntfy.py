@@ -28,13 +28,12 @@ def send(report: str, title: str = "ShipLog Report") -> None:
 
     url = f"{endpoint.rstrip('/')}/{topic}"
 
-    body = _markdown_to_ntfy(report)
+    body = _markdown_to_plain(report)
 
     headers: dict[str, str] = {
         "Title": title,
         "Priority": priority,
         "Tags": "package,ship",
-        "Markdown": "yes",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -44,20 +43,36 @@ def send(report: str, title: str = "ShipLog Report") -> None:
         resp.raise_for_status()
 
 
-def _markdown_to_ntfy(report: str) -> str:
-    """Convert a markdown report to ntfy-friendly format.
+def _markdown_to_plain(text: str) -> str:
+    """Convert markdown to clean plain text for ntfy.
 
-    ntfy renders bold, italic, code, links, and lists,
-    but NOT # headers. Convert headers to bold text.
+    ntfy clients inconsistently render markdown,
+    so we strip it to plain text that looks good everywhere.
     """
     import re
 
     lines = []
-    for line in report.splitlines():
-        # ## Header → **Header**
+    for line in text.splitlines():
+        # ## Header → HEADER (uppercase for visual weight)
         m = re.match(r'^(#{1,6})\s+(.+)$', line)
         if m:
-            lines.append(f"**{m.group(2)}**")
-        else:
-            lines.append(line)
+            lines.append(m.group(2).upper())
+            continue
+
+        # **bold** → BOLD
+        line = re.sub(r'\*\*(.+?)\*\*', lambda m: m.group(1).upper(), line)
+
+        # *italic* → italic (just remove the markers)
+        line = re.sub(r'\*(.+?)\*', r'\1', line)
+
+        # `code` → code (just remove backticks)
+        line = re.sub(r'`(.+?)`', r'\1', line)
+
+        # [text](url) → text (url)
+        line = re.sub(r'\[(.+?)\]\((.+?)\)', r'\1 (\2)', line)
+
+        # - bullet → • bullet
+        line = re.sub(r'^(\s*)[-*]\s+', r'\1• ', line)
+
+        lines.append(line)
     return "\n".join(lines)
