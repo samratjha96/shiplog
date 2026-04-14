@@ -13,6 +13,9 @@ def is_configured() -> bool:
 def send(report: str, title: str = "ShipLog Report") -> None:
     """Send a report to ntfy. No-op if not configured.
 
+    Converts the markdown report to ntfy-friendly format
+    (ntfy doesn't render # headers).
+
     Raises httpx errors on failure so the caller can handle them.
     """
     topic = os.environ.get("NTFY_TOPIC")
@@ -25,6 +28,8 @@ def send(report: str, title: str = "ShipLog Report") -> None:
 
     url = f"{endpoint.rstrip('/')}/{topic}"
 
+    body = _markdown_to_ntfy(report)
+
     headers: dict[str, str] = {
         "Title": title,
         "Priority": priority,
@@ -35,5 +40,24 @@ def send(report: str, title: str = "ShipLog Report") -> None:
         headers["Authorization"] = f"Bearer {token}"
 
     with httpx.Client(timeout=15.0) as client:
-        resp = client.post(url, content=report.encode("utf-8"), headers=headers)
+        resp = client.post(url, content=body.encode("utf-8"), headers=headers)
         resp.raise_for_status()
+
+
+def _markdown_to_ntfy(report: str) -> str:
+    """Convert a markdown report to ntfy-friendly format.
+
+    ntfy renders bold, italic, code, links, and lists,
+    but NOT # headers. Convert headers to bold text.
+    """
+    import re
+
+    lines = []
+    for line in report.splitlines():
+        # ## Header → **Header**
+        m = re.match(r'^(#{1,6})\s+(.+)$', line)
+        if m:
+            lines.append(f"**{m.group(2)}**")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
