@@ -188,9 +188,15 @@ def resolve_github_repo(
         # Actually no: fail closed. Return None if we can't validate.
         return None
 
+    # Normalize image for resolution: bare 'namespace/name' -> 'docker.io/namespace/name'
+    # Diun sometimes omits the registry prefix.
+    normalized = image
+    if "/" in image and "." not in image.split("/")[0]:
+        normalized = f"docker.io/{image}"
+
     # 2. ghcr.io — image path IS the repo path
-    if image.startswith("ghcr.io/"):
-        parts = image.removeprefix("ghcr.io/").split("/")
+    if normalized.startswith("ghcr.io/"):
+        parts = normalized.removeprefix("ghcr.io/").split("/")
         if len(parts) >= 2:
             candidate = f"{parts[0]}/{parts[1]}"
             if validate_github_repo(client, candidate):
@@ -198,8 +204,8 @@ def resolve_github_repo(
                 return candidate
 
     # 3. lscr.io — LinuxServer images, also published on Docker Hub
-    if image.startswith("lscr.io/"):
-        parts = image.removeprefix("lscr.io/").split("/")
+    if normalized.startswith("lscr.io/"):
+        parts = normalized.removeprefix("lscr.io/").split("/")
         if len(parts) >= 2:
             docker_hub_image = f"docker.io/{parts[0]}/{parts[1]}"
             candidates = _try_docker_hub_description(client, docker_hub_image)
@@ -211,7 +217,7 @@ def resolve_github_repo(
     # 4. Docker Hub — scrape description for GitHub URLs
     #    Try all candidates, prefer the first one that has releases
     #    (avoids picking e.g. traefik-library-image over traefik/traefik)
-    candidates = _try_docker_hub_description(client, image)
+    candidates = _try_docker_hub_description(client, normalized)
     first_valid: str | None = None
     for candidate in candidates:
         result = _try_candidate(client, conn, image, candidate)
@@ -229,7 +235,7 @@ def resolve_github_repo(
     # 5. Last resort: try namespace/name as a GitHub repo directly.
     #    Many projects use the same owner/repo on GitHub and Docker Hub
     #    (e.g. grafana/grafana, jellyfin/jellyfin). Validated via API.
-    candidate = _image_to_github_candidate(image)
+    candidate = _image_to_github_candidate(normalized)
     if candidate:
         result = _try_candidate(client, conn, image, candidate)
         if result:
