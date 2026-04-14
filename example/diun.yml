@@ -3,13 +3,25 @@
 #
 # When diun detects a new image version, it calls `shiplog ingest`
 # which reads the DIUN_ENTRY_* env vars and stores the update in SQLite.
+#
+# Docs: https://crazymax.dev/diun/
 
 watch:
   schedule: "0 */6 * * *"  # Check every 6 hours
 
+# --- Providers ---
+# Use 'file' provider to watch specific images (see images.yml).
+# Use 'docker' provider to automatically watch all running containers.
+# You can use both.
+
 providers:
+  # Static list of images to watch
   file:
     filename: /etc/diun/images.yml
+
+  # Auto-detect running containers (uncomment to enable)
+  # docker:
+  #   watchByDefault: true
 
 notif:
   script:

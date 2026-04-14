@@ -68,6 +68,40 @@ class TestBuildPrompt:
         # Should be cut to ~3000 chars
         assert len(prompt) < 4000
 
+    def test_tag_included_in_prompt(self):
+        cl = Changelog(
+            image="docker.io/traefik",
+            github_repo="traefik/traefik",
+            releases=[
+                {"tag_name": "v3.4.0", "name": "v3.4.0", "body": "New stuff", "published_at": "2024-03-01"},
+            ],
+            tag="v3.4.0",
+        )
+        prompt = build_prompt([cl])
+        assert "Detected version: v3.4.0" in prompt
+        assert "→ v3.4.0" in prompt
+
+    def test_error_with_tag(self):
+        cl = Changelog(
+            image="ghcr.io/immich-app/immich-server",
+            github_repo=None,
+            releases=[],
+            tag="v1.130.3",
+            error="No GitHub repo found.",
+        )
+        prompt = build_prompt([cl])
+        assert "Detected version: v1.130.3" in prompt
+        assert "No GitHub repo found" in prompt
+
+    def test_no_tag_omits_detected_line(self):
+        cl = Changelog(
+            image="img",
+            github_repo="o/r",
+            releases=[{"tag_name": "v1", "name": "v1", "body": "stuff", "published_at": ""}],
+        )
+        prompt = build_prompt([cl])
+        assert "Detected version" not in prompt
+
     def test_empty_changelogs(self):
         prompt = build_prompt([])
         assert "Analyze" in prompt

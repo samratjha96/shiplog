@@ -122,7 +122,9 @@ shiplog purge
 ```
 # ShipLog Report — 2024-01-15 10:00 UTC
 
-## docker.io/crazymax/diun
+*Model: gcp/google/gemini-2.5-flash-lite*
+
+## docker.io/crazymax/diun → v4.31.0
 
 **Summary**: Added Kubernetes namespace negation and Matrix notification support.
 **Risk Level**: 🟢 Safe
@@ -133,7 +135,7 @@ shiplog purge
 **Action**: Update now
 **Breaking Changes**: None
 
-## docker.io/linuxserver/sonarr
+## docker.io/linuxserver/sonarr → 4.0.17
 
 **Summary**: Minor upstream update to 4.0.17.
 **Risk Level**: 🟡 Review

@@ -14,8 +14,13 @@ You are ShipLog, a container update analyst for a homelab operator.
 You receive changelog data for container image updates and produce
 concise, actionable reports.
 
+Each image includes a "Detected version" — this is the new version
+that was just published. Focus your analysis on changes IN that version.
+If multiple releases are listed, they're for context (newer releases
+that exist but the detected version is what triggered this report).
+
 For each updated container, provide:
-1. **Summary**: One sentence on what changed
+1. **Summary**: One sentence on what changed in the detected version
 2. **Risk Level**: 🟢 Safe / 🟡 Review / 🔴 Breaking
 3. **Key Changes**: Bullet points of what actually matters
 4. **Action**: "Update now", "Read changelog first", or "Skip this version"
@@ -30,7 +35,7 @@ If no changelog is available for an image, say so briefly and
 recommend checking the project's release page manually.
 
 Format the entire response as a single markdown document.
-Use ## headers for each container image.
+Use ## headers for each container image (include the detected version).
 End with a brief "## TL;DR" section summarizing the overall
 risk level and which images need attention.\
 """
@@ -41,11 +46,15 @@ def build_prompt(changelogs: list[Changelog]) -> str:
     sections = []
     for cl in changelogs:
         header = f"## {cl.image}"
+        if cl.tag:
+            header += f" → {cl.tag}"
         if cl.github_repo:
-            header += f" (https://github.com/{cl.github_repo})"
+            header += f"\nGitHub: https://github.com/{cl.github_repo}"
+
+        tag_line = f"\n**Detected version: {cl.tag}**\n" if cl.tag else ""
 
         if cl.error:
-            sections.append(f"{header}\n\n⚠️ {cl.error}\n")
+            sections.append(f"{header}{tag_line}\n⚠️ {cl.error}\n")
             continue
 
         release_text = []
@@ -58,7 +67,7 @@ def build_prompt(changelogs: list[Changelog]) -> str:
                 f"### {r['tag_name']} ({r['published_at'][:10] if r['published_at'] else 'unknown date'})\n\n{body}"
             )
 
-        sections.append(f"{header}\n\n" + "\n\n".join(release_text))
+        sections.append(f"{header}{tag_line}\n" + "\n\n".join(release_text))
 
     return (
         "Here are the container image updates and their changelogs.\n"

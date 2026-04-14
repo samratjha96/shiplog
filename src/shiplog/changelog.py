@@ -26,6 +26,7 @@ class Changelog:
     image: str
     github_repo: str | None  # owner/repo
     releases: list[dict]     # [{tag_name, name, body, published_at}, ...]
+    tag: str = ""            # the detected tag (e.g. "v4.31.0")
     error: str | None = None  # if we couldn't fetch
 
 
@@ -291,6 +292,7 @@ def fetch_changelog(
             image=image,
             github_repo=None,
             releases=[],
+            tag=tag,
             error=f"No GitHub repo found. Add mapping with: shiplog map {image} <owner/repo>",
         )
 
@@ -300,6 +302,7 @@ def fetch_changelog(
             image=image,
             github_repo=repo,
             releases=[],
+            tag=tag,
             error=f"No releases found on GitHub for {repo}",
         )
 
@@ -319,10 +322,11 @@ def fetch_changelog(
     # If we found the exact match, return releases up to and including it.
     # Otherwise return the most recent ones for context.
     if found_match:
-        return Changelog(image=image, github_repo=repo, releases=relevant)
+        return Changelog(image=image, github_repo=repo, releases=relevant, tag=tag)
     else:
         return Changelog(
             image=image,
             github_repo=repo,
             releases=releases[:5],  # Just give recent context
+            tag=tag,
         )

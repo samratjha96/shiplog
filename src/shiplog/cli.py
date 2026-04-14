@@ -184,6 +184,7 @@ def report(ctx: click.Context, dry_run: bool, model: str | None, output_path: st
                     image=image,
                     github_repo=None,
                     releases=[],
+                    tag=tag,
                     error=f"Changelog fetch failed: {e}",
                 )
             changelogs.append(cl)
