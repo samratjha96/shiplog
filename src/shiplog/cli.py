@@ -1,5 +1,6 @@
 """ShipLog CLI — container update reports powered by AI."""
 
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -231,7 +232,6 @@ def status(ctx: click.Context) -> None:
     all_mappings = db.get_all_github_mappings(conn)
     all_reports = db.get_all_reports(conn)
 
-    import os
     click.echo("ShipLog Status")
     click.echo("=" * 40)
     click.echo(f"  Database:       {db_path}")

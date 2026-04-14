@@ -1,6 +1,10 @@
-"""Tests for shiplog.analyzer — LLM prompt building (no API calls)."""
+"""Tests for shiplog.analyzer — LLM prompt building and think-block stripping."""
 
-from shiplog.analyzer import build_prompt
+from unittest.mock import patch
+
+import pytest
+
+from shiplog.analyzer import _strip_think_blocks, analyze, build_prompt
 from shiplog.changelog import Changelog
 
 
@@ -67,3 +71,28 @@ class TestBuildPrompt:
     def test_empty_changelogs(self):
         prompt = build_prompt([])
         assert "Analyze" in prompt
+
+
+class TestStripThinkBlocks:
+    def test_removes_think_block(self):
+        text = "<think>\nLet me reason...\n</think>\nHere is the actual response."
+        assert _strip_think_blocks(text) == "Here is the actual response."
+
+    def test_removes_multiple_think_blocks(self):
+        text = "<think>first</think>Hello <think>second</think>world"
+        assert _strip_think_blocks(text) == "Hello world"
+
+    def test_no_think_blocks(self):
+        text = "Just a normal response."
+        assert _strip_think_blocks(text) == "Just a normal response."
+
+    def test_empty_string(self):
+        assert _strip_think_blocks("") == ""
+
+
+class TestAnalyze:
+    def test_missing_api_key(self):
+        cl = Changelog(image="img", github_repo="o/r", releases=[])
+        with patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+                analyze([cl])
