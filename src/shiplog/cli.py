@@ -76,12 +76,22 @@ def test_ingest(ctx: click.Context, image_ref: str, status: str) -> None:
     else:
         image, tag = image_ref, "latest"
 
+    # Auto-generate hub_link for Docker Hub images
+    hub_link = None
+    for prefix in ("docker.io/", "index.docker.io/"):
+        if image.startswith(prefix):
+            name = image[len(prefix):]
+            if "/" in name:
+                hub_link = f"https://hub.docker.com/r/{name}"
+            break
+
     conn = _connect(ctx)
     row_id = db.insert_update(
         conn,
         image=image,
         tag=tag,
         status=status,
+        hub_link=hub_link,
     )
     click.echo(f"Ingested: {image}:{tag} ({status}) → id={row_id}")
 
@@ -126,16 +136,14 @@ def report(ctx: click.Context, dry_run: bool, model: str | None) -> None:
     # Fetch changelogs
     changelogs: list[Changelog] = []
     with httpx.Client(timeout=15.0) as client:
-        # Deduplicate by image (may have multiple updates for same image)
-        seen_images: set[str] = set()
+        # Deduplicate by image — use the latest (last-ingested) tag per image
+        latest_by_image: dict[str, str] = {}
         for row in pending:
-            image = row["image"]
-            if image in seen_images:
-                continue
-            seen_images.add(image)
+            latest_by_image[row["image"]] = row["tag"]
 
-            click.echo(f"  Fetching changelog for {image}:{row['tag']}...", err=True)
-            cl = fetch_changelog(client, conn, image, row["tag"])
+        for image, tag in latest_by_image.items():
+            click.echo(f"  Fetching changelog for {image}:{tag}...", err=True)
+            cl = fetch_changelog(client, conn, image, tag)
             changelogs.append(cl)
 
     if not changelogs:
@@ -151,6 +159,9 @@ def report(ctx: click.Context, dry_run: bool, model: str | None) -> None:
         sys.exit(1)
     except httpx.HTTPStatusError as e:
         click.echo(f"LLM API error: {e.response.status_code} — {e.response.text[:200]}", err=True)
+        sys.exit(1)
+    except httpx.TimeoutException:
+        click.echo("Error: LLM API request timed out. Try a faster model with --model.", err=True)
         sys.exit(1)
 
     # Output report
@@ -182,7 +193,9 @@ def show(ctx: click.Context, report_id: int) -> None:
     if not row:
         click.echo(f"Report {report_id} not found.", err=True)
         sys.exit(1)
+    # Report content already includes its own header, just print it
     click.echo(row["content"])
+    click.echo(f"\n---\nReport #{report_id} | Generated {row['created_at'][:19]} | Model: {row['model']}", err=True)
 
 
 @cli.command("map")

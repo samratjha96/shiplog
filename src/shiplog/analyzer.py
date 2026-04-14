@@ -86,7 +86,7 @@ def analyze(
     model_used = model or DEFAULT_MODEL
     user_prompt = build_prompt(changelogs)
 
-    with httpx.Client() as client:
+    with httpx.Client(timeout=180.0) as client:
         resp = client.post(
             LLM_API_URL,
             headers={
@@ -102,7 +102,6 @@ def analyze(
                 "max_tokens": 4096,
                 "temperature": 0.3,
             },
-            timeout=90.0,
         )
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]

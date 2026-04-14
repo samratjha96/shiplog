@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
@@ -278,8 +279,8 @@ class TestReport:
 
     @patch("shiplog.cli.fetch_changelog")
     @patch("shiplog.cli.analyze")
-    def test_report_deduplicates_images(self, mock_analyze, mock_fetch, runner, db_path):
-        """Multiple updates for same image should only fetch changelog once."""
+    def test_report_deduplicates_images_uses_latest_tag(self, mock_analyze, mock_fetch, runner, db_path):
+        """Multiple updates for same image should only fetch changelog once, using the latest tag."""
         conn = db.connect(db_path)
         db.insert_update(conn, image="docker.io/foo/bar", tag="v1.0", status="update")
         db.insert_update(conn, image="docker.io/foo/bar", tag="v2.0", status="update")
@@ -297,6 +298,10 @@ class TestReport:
         assert result.exit_code == 0
         # fetch_changelog should only be called once despite 2 updates for same image
         assert mock_fetch.call_count == 1
+        # Should use the latest tag (v2.0), not the first one (v1.0)
+        call_args = mock_fetch.call_args
+        assert call_args[0][2] == "docker.io/foo/bar"  # image
+        assert call_args[0][3] == "v2.0"               # tag (latest)
 
     @patch("shiplog.cli.analyze")
     @patch("shiplog.cli.fetch_changelog")
@@ -311,6 +316,20 @@ class TestReport:
         result = invoke(runner, ["report"], db_path)
         assert result.exit_code == 1
         assert "LLM_API_KEY" in result.output
+
+    @patch("shiplog.cli.analyze")
+    @patch("shiplog.cli.fetch_changelog")
+    def test_report_timeout_error(self, mock_fetch, mock_analyze, runner, db_path):
+        conn = db.connect(db_path)
+        db.insert_update(conn, image="img", tag="v1", status="new")
+        conn.close()
+
+        mock_fetch.return_value = Changelog(image="img", github_repo="o/r", releases=[])
+        mock_analyze.side_effect = httpx.ReadTimeout("timed out")
+
+        result = invoke(runner, ["report"], db_path)
+        assert result.exit_code == 1
+        assert "timed out" in result.output
 
     @patch("shiplog.cli.analyze")
     @patch("shiplog.cli.fetch_changelog")

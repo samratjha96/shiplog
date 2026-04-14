@@ -48,18 +48,31 @@ def validate_github_repo(client: httpx.Client, owner_repo: str) -> bool:
         return False
 
 
+# GitHub paths that look like owner/repo but aren't actual repositories.
+_GITHUB_NON_REPO_PREFIXES = frozenset({
+    "orgs", "settings", "marketplace", "features", "topics",
+    "sponsors", "collections", "explore", "trending", "events",
+    "about", "pricing", "security", "login", "signup", "apps",
+})
+
+
 def _extract_github_url(text: str) -> str | None:
     """Extract a github.com/owner/repo reference from text.
 
     Only matches explicit URLs — not arbitrary patterns.
+    Rejects known non-repo paths like github.com/orgs/...
     """
-    match = re.search(r"https?://github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)", text)
-    if match:
-        # Strip trailing .git or slashes
-        repo = match.group(1).rstrip("/")
+    for match in re.finditer(
+        r"https?://github\.com/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)", text
+    ):
+        owner = match.group(1)
+        repo = match.group(2).rstrip("/")
         if repo.endswith(".git"):
             repo = repo[:-4]
-        return repo
+        # Skip known non-repo URL patterns
+        if owner.lower() in _GITHUB_NON_REPO_PREFIXES:
+            continue
+        return f"{owner}/{repo}"
     return None
 
 

@@ -40,12 +40,24 @@ class TestExtractGitHubUrl:
         # Should extract owner/repo even if there's more path after
         text = "https://github.com/crazy-max/diun/releases"
         result = _extract_github_url(text)
-        # The regex captures owner/repo — "diun/releases" would be wrong.
-        # Let's verify what actually happens:
-        assert result is not None
-        # The regex r"github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)"
-        # will match "crazy-max/diun" (stops at /)
         assert result == "crazy-max/diun"
+
+    def test_rejects_github_org_paths(self):
+        # github.com/orgs/linuxserver/packages is NOT a repo
+        text = "See https://github.com/orgs/linuxserver/packages for downloads."
+        assert _extract_github_url(text) is None
+
+    def test_rejects_github_settings_paths(self):
+        text = "Visit https://github.com/settings/tokens"
+        assert _extract_github_url(text) is None
+
+    def test_skips_non_repo_finds_real_repo(self):
+        # If text contains both a non-repo and a real repo URL, find the real one
+        text = (
+            "See https://github.com/orgs/linuxserver/packages and "
+            "source at https://github.com/linuxserver/docker-sonarr"
+        )
+        assert _extract_github_url(text) == "linuxserver/docker-sonarr"
 
 
 class TestValidateGitHubRepo:
