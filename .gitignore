@@ -1,8 +1,9 @@
-agent_logs/
 __pycache__/
 *.pyc
 .venv/
 *.egg-info/
 dist/
+build/
 .pytest_cache/
 *.db
+agent_logs/

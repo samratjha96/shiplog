@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import click
 import httpx
@@ -87,10 +88,6 @@ def test_ingest(ctx: click.Context, image_ref: str, status: str) -> None:
         hub_link=hub_link,
     )
     click.echo(f"Ingested: {image}:{tag} ({status}) → id={row_id}")
-
-
-# _split_image_ref kept as alias for test compatibility
-_split_image_ref = split_image_ref
 
 
 def _generate_hub_link(image: str) -> str | None:
@@ -233,7 +230,6 @@ def report(ctx: click.Context, dry_run: bool, model: str | None, output_path: st
     full_report = header + content
 
     if output_path:
-        from pathlib import Path
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text(full_report + "\n")
         click.echo(f"Report written to {output_path}", err=True)

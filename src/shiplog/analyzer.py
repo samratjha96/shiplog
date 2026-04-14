@@ -1,6 +1,7 @@
 """LLM analysis via OpenAI-compatible inference API."""
 
 import os
+import re
 
 import httpx
 
@@ -123,5 +124,4 @@ def analyze(
 
 def _strip_think_blocks(text: str) -> str:
     """Remove <think>...</think> blocks from LLM output."""
-    import re
     return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()

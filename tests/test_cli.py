@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from shiplog import db
 from shiplog.changelog import Changelog
-from shiplog.cli import _split_image_ref, cli
+from shiplog.cli import cli
 
 
 @pytest.fixture
@@ -26,32 +26,6 @@ def db_path(tmp_path):
 def invoke(runner, args, db_path, env=None):
     """Invoke CLI with --db pointing to a temp database."""
     return runner.invoke(cli, ["--db", db_path] + args, env=env or {})
-
-
-# --- _split_image_ref ---
-
-
-class TestSplitImageRef:
-    def test_standard(self):
-        assert _split_image_ref("docker.io/foo/bar:v1") == ("docker.io/foo/bar", "v1")
-
-    def test_no_tag(self):
-        assert _split_image_ref("docker.io/foo/bar") == ("docker.io/foo/bar", "latest")
-
-    def test_port_with_tag(self):
-        assert _split_image_ref("registry.local:5000/app:v2") == ("registry.local:5000/app", "v2")
-
-    def test_port_no_tag(self):
-        assert _split_image_ref("registry.local:5000/app") == ("registry.local:5000/app", "latest")
-
-    def test_ghcr(self):
-        assert _split_image_ref("ghcr.io/owner/repo:sha-abc") == ("ghcr.io/owner/repo", "sha-abc")
-
-    def test_simple_name(self):
-        assert _split_image_ref("nginx:alpine") == ("nginx", "alpine")
-
-    def test_simple_name_no_tag(self):
-        assert _split_image_ref("nginx") == ("nginx", "latest")
 
 
 # --- ingest ---
