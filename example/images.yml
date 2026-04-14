@@ -25,6 +25,8 @@
   watch_repo: true
   max_tags: 3
 
+# NOTE: ghcr.io path doesn't match the GitHub repo name.
+# You'll need: shiplog map ghcr.io/immich-app/immich-server immich-app/immich
 - name: ghcr.io/immich-app/immich-server
   watch_repo: true
   max_tags: 3

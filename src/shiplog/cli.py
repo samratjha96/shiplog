@@ -1,5 +1,6 @@
 """ShipLog CLI — container update reports powered by AI."""
 
+import json as json_mod
 import os
 import sqlite3
 import sys
@@ -111,11 +112,27 @@ def _generate_hub_link(image: str) -> str | None:
 
 @cli.command("list")
 @click.option("--all", "show_all", is_flag=True, help="Show all updates, not just pending.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for scripting).")
 @click.pass_context
-def list_updates(ctx: click.Context, show_all: bool) -> None:
+def list_updates(ctx: click.Context, show_all: bool, as_json: bool) -> None:
     """List pending (unreported) updates."""
     conn = _connect(ctx)
     rows = db.get_all_updates(conn) if show_all else db.get_pending_updates(conn)
+
+    if as_json:
+        items = [
+            {
+                "id": row["id"],
+                "image": row["image"],
+                "tag": row["tag"],
+                "status": row["status"],
+                "reported": bool(row["reported"]),
+                "ingested_at": row["ingested_at"],
+            }
+            for row in rows
+        ]
+        click.echo(json_mod.dumps(items, indent=2))
+        return
 
     if not rows:
         label = "updates" if show_all else "pending updates"
@@ -173,6 +190,21 @@ def report(ctx: click.Context, dry_run: bool, model: str | None, output_path: st
     if not changelogs:
         click.echo("No changelogs to analyze.")
         return
+
+    # Show summary: which images resolved, which didn't
+    resolved = [cl for cl in changelogs if cl.github_repo and not cl.error]
+    unresolved = [cl for cl in changelogs if not cl.github_repo]
+    no_releases = [cl for cl in changelogs if cl.github_repo and cl.error]
+
+    if resolved:
+        click.echo(f"  ✅ {len(resolved)} image(s) with changelogs", err=True)
+    if no_releases:
+        click.echo(f"  ⚠️  {len(no_releases)} image(s) with no releases found", err=True)
+    if unresolved:
+        click.echo(f"  ❌ {len(unresolved)} image(s) with no GitHub mapping", err=True)
+        click.echo("  Hint: add mappings to get changelogs for these images:", err=True)
+        for cl in unresolved:
+            click.echo(f"    shiplog map {cl.image} <owner/repo>", err=True)
 
     # Call LLM
     click.echo("Analyzing with LLM...", err=True)
@@ -316,8 +348,9 @@ def purge(ctx: click.Context, yes: bool) -> None:
 
 
 @cli.command()
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for scripting).")
 @click.pass_context
-def status(ctx: click.Context) -> None:
+def status(ctx: click.Context, as_json: bool) -> None:
     """Show ShipLog status and configuration."""
     db_path = db.get_db_path(ctx.obj.get("db_path"))
     conn = _connect(ctx)
@@ -327,7 +360,22 @@ def status(ctx: click.Context) -> None:
     all_mappings = db.get_all_github_mappings(conn)
     all_reports = db.get_all_reports(conn)
 
-    last_report = all_reports[0]["created_at"][:19] if all_reports else "never"
+    last_report = all_reports[0]["created_at"][:19] if all_reports else None
+
+    if as_json:
+        data = {
+            "database": str(db_path),
+            "total_updates": len(all_updates),
+            "pending": len(pending),
+            "reports": len(all_reports),
+            "last_report": last_report,
+            "mappings": len(all_mappings),
+            "llm_api_key": bool(os.environ.get("LLM_API_KEY")),
+            "github_token": bool(os.environ.get("GITHUB_TOKEN")),
+            "pending_images": sorted({row["image"] for row in pending}),
+        }
+        click.echo(json_mod.dumps(data, indent=2))
+        return
 
     click.echo("ShipLog Status")
     click.echo("=" * 40)
@@ -335,7 +383,7 @@ def status(ctx: click.Context) -> None:
     click.echo(f"  Total updates:  {len(all_updates)}")
     click.echo(f"  Pending:        {len(pending)}")
     click.echo(f"  Reports:        {len(all_reports)}")
-    click.echo(f"  Last report:    {last_report}")
+    click.echo(f"  Last report:    {last_report or 'never'}")
     click.echo(f"  Mappings:       {len(all_mappings)}")
     click.echo(f"  LLM API key: {'✅ set' if os.environ.get('LLM_API_KEY') else '❌ not set'}")
     click.echo(f"  GitHub token:   {'✅ set' if os.environ.get('GITHUB_TOKEN') else '⚠️  not set (60 req/hr limit)'}")

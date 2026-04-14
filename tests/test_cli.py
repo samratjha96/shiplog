@@ -1,5 +1,6 @@
 """Tests for shiplog.cli — Click CLI commands."""
 
+import json
 from unittest.mock import patch
 
 import httpx
@@ -200,6 +201,44 @@ class TestList:
         assert "img1" in result.output
         assert "img2" in result.output
 
+    def test_json_output(self, runner, db_path):
+        conn = db.connect(db_path)
+        db.insert_update(conn, image="docker.io/foo/bar", tag="v1", status="new")
+        db.insert_update(conn, image="docker.io/baz/qux", tag="v2", status="update")
+        conn.close()
+
+        result = invoke(runner, ["list", "--json"], db_path)
+        assert result.exit_code == 0
+        items = json.loads(result.output)
+        assert len(items) == 2
+        assert items[0]["image"] == "docker.io/foo/bar"
+        assert items[0]["tag"] == "v1"
+        assert items[0]["reported"] is False
+        assert "id" in items[0]
+        assert "ingested_at" in items[0]
+
+    def test_json_output_empty(self, runner, db_path):
+        result = invoke(runner, ["list", "--json"], db_path)
+        assert result.exit_code == 0
+        items = json.loads(result.output)
+        assert items == []
+
+    def test_json_with_all(self, runner, db_path):
+        conn = db.connect(db_path)
+        id1 = db.insert_update(conn, image="img1", tag="v1", status="new")
+        db.insert_update(conn, image="img2", tag="v2", status="new")
+        report_id = db.insert_report(conn, model="test", content="report")
+        db.mark_reported(conn, [id1], report_id)
+        conn.close()
+
+        result = invoke(runner, ["list", "--json", "--all"], db_path)
+        items = json.loads(result.output)
+        assert len(items) == 2
+        reported = [i for i in items if i["reported"]]
+        pending = [i for i in items if not i["reported"]]
+        assert len(reported) == 1
+        assert len(pending) == 1
+
 
 # --- map / mappings ---
 
@@ -326,6 +365,23 @@ class TestStatus:
         assert "Last report:    never" not in result.output
         # Should show a timestamp, not "never"
         assert "Reports:        1" in result.output
+
+    def test_status_json(self, runner, db_path):
+        conn = db.connect(db_path)
+        db.insert_update(conn, image="img1", tag="v1", status="new")
+        db.set_github_mapping(conn, "img1", "owner/repo")
+        conn.close()
+
+        result = invoke(runner, ["status", "--json"], db_path)
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["total_updates"] == 1
+        assert data["pending"] == 1
+        assert data["mappings"] == 1
+        assert data["last_report"] is None
+        assert "img1" in data["pending_images"]
+        assert isinstance(data["llm_api_key"], bool)
+        assert isinstance(data["github_token"], bool)
 
 
 # --- purge ---
@@ -519,6 +575,36 @@ class TestReport:
         errors = [cl for cl in changelogs_arg if cl.error]
         assert len(errors) == 1
         assert "Unexpected JSON decode error" in errors[0].error
+
+    @patch("shiplog.cli.fetch_changelog")
+    @patch("shiplog.cli.analyze")
+    def test_report_shows_mapping_hints_for_unresolved(self, mock_analyze, mock_fetch, runner, db_path):
+        """Report stderr should show shiplog map hints for images without GitHub repos."""
+        conn = db.connect(db_path)
+        db.insert_update(conn, image="docker.io/good/image", tag="v1", status="new")
+        db.insert_update(conn, image="registry.local/private-app", tag="v2", status="new")
+        conn.close()
+
+        def side_effect(client, conn, image, tag):
+            if "good" in image:
+                return Changelog(
+                    image=image, github_repo="good/image",
+                    releases=[{"tag_name": "v1", "name": "v1", "body": "stuff", "published_at": "2024-01-01"}],
+                )
+            return Changelog(
+                image=image, github_repo=None, releases=[],
+                error=f"No GitHub repo found. Add mapping with: shiplog map {image} <owner/repo>",
+            )
+
+        mock_fetch.side_effect = side_effect
+        mock_analyze.return_value = ("Report content", "test-model")
+
+        result = invoke(runner, ["report", "--dry-run"], db_path)
+        assert result.exit_code == 0
+        # Stderr should contain the mapping hint
+        assert "shiplog map registry.local/private-app" in result.output
+        assert "1 image(s) with changelogs" in result.output
+        assert "1 image(s) with no GitHub mapping" in result.output
 
     @patch("shiplog.cli.analyze")
     @patch("shiplog.cli.fetch_changelog")

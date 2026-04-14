@@ -71,12 +71,17 @@ shiplog map docker.io/homeassistant/home-assistant home-assistant/core
 ```bash
 # Check status
 shiplog status
+shiplog status --json   # machine-readable
 
 # List pending (unreported) updates
 shiplog list
 
 # List all updates (including already-reported ones)
 shiplog list --all
+
+# JSON output (for scripting / piping to jq)
+shiplog list --json
+shiplog list --all --json
 
 # Generate an AI report for pending updates
 shiplog report
