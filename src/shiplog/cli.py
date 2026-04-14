@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import click
 import httpx
 
-from shiplog import db
+from shiplog import __version__, db
 from shiplog.analyzer import analyze
 from shiplog.changelog import Changelog, fetch_changelog
 from shiplog.diun import DiunParseError, parse_env, split_image_ref
@@ -24,6 +24,7 @@ def _connect(ctx: click.Context) -> sqlite3.Connection:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="shiplog")
 @click.option("--db", "db_path", envvar="SHIPLOG_DB_PATH", default=None,
               help="Path to SQLite database.")
 @click.pass_context
@@ -218,6 +219,9 @@ def report(ctx: click.Context, dry_run: bool, model: str | None, output_path: st
         sys.exit(1)
     except httpx.TimeoutException:
         click.echo("Error: LLM API request timed out. Try a faster model with --model.", err=True)
+        sys.exit(1)
+    except httpx.HTTPError as e:
+        click.echo(f"Error: LLM API request failed: {e}", err=True)
         sys.exit(1)
 
     # Output report
